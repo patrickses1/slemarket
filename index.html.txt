@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sleconomicmarket</title>
+  <style>
+    :root{
+      --bg:#faf8f4; --fg:#2d1f12;
+      --gold-300:#f3d48a; --gold-400:#e8c160; --gold-500:#d4a017; --gold-600:#b1840f;
+      --card:#fffdf9; --muted:#6b5c4f; --border:#e7dccb; --accent:#b1840f;
+    }
+    *{box-sizing:border-box} html,body{height:100%}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;background:var(--bg);color:var(--fg)}
+    header,footer{background:linear-gradient(180deg,#fff8ec,#fff3db);border-bottom:1px solid var(--border)}
+    header{position:sticky;top:0;z-index:10}
+    nav{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:10px 12px}
+    nav a{color:var(--fg);text-decoration:none;padding:6px 10px;border-radius:10px}
+    nav a:hover{background:#fff6e7}
+    .spacer{flex:1}
+    #authArea button{margin-left:6px}
+    main{max-width:980px;margin:16px auto;padding:0 12px 80px}
+    h2{margin:8px 0 12px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px;position:relative;box-shadow:0 6px 18px rgba(212,160,23,.08)}
+    .card .badge{position:absolute;top:10px;right:10px;background:var(--gold-500);color:#23180f;padding:3px 8px;border-radius:999px;font-size:12px;font-weight:700}
+    .muted{color:var(--muted)}
+    label{display:block;margin:8px 0}
+    input,select,textarea,button{font:inherit}
+    input,select,textarea{width:100%;padding:10px;border:1px solid var(--border);border-radius:10px;background:#fff}
+    textarea{min-height:100px}
+    .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+    .btn{display:inline-block;padding:10px 14px;border-radius:12px;background:linear-gradient(180deg,var(--gold-400),var(--gold-600));border:1px solid var(--gold-500);color:#23180f;font-weight:600;text-decoration:none}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+    footer{position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--border)}
+    .foot{max-width:980px;margin:0 auto;padding:8px 12px;display:flex;gap:10px;align-items:center;justify-content:space-between}
+    .foot .btnbar{display:flex;gap:8px}
+    .pill{padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:#fff}
+    .photos{display:flex;gap:8px;flex-wrap:wrap}
+    .photos .ph{position:relative;width:76px;height:76px;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+    .photos .ph img{width:100%;height:100%;object-fit:cover}
+    .photos .ph .x{position:absolute;top:2px;right:4px;border:none;background:#0008;color:#fff;border-radius:6px;padding:0 6px;line-height:20px;cursor:pointer}
+  </style>
+</head>
+<body>
+  <header>
+    <nav>
+      <!-- Browse -->
+      <a href="#/">🏠 Home</a>
+      <a href="#/goods">🛍️ Goods</a>
+      <a href="#/services">🛠️ Services</a>
+      <a href="#/rentals">🏡 Rentals</a>
+      <a href="#/jobs">💼 Jobs</a>
+      <a href="#/ads">📣 Ads</a>
+
+      <span class="spacer"></span>
+
+      <!-- Create -->
+      <a href="#/post/goods">🛍️ Post Goods</a>
+      <a href="#/post/services">🛠️ Post Services</a>
+      <a href="#/post/rentals">🏡 Post Rentals</a>
+      <a href="#/post/jobs">💼 Post Jobs</a>
+      <a href="#/post/ads">📣 Post Advertising</a>
+
+      <span class="spacer"></span>
+
+      <!-- Tools -->
+      <a href="#/search">🔎 Search</a>
+      <a href="#/inbox">💬 Inbox</a>
+      <a href="#/listings">📦 Your Listings</a>
+      <a href="#/location">📍 My Location</a>
+      <a id="adminLink"   href="#/admin" style="display:none">🛡️ Admin</a>
+      <a id="quotesLink"  href="#/admin/quotes" style="display:none">🛡️ Quotes</a>
+      <a id="adCampLink"  href="#/ads/campaigns" style="display:none">🛡️ Ad Campaigns</a>
+      <span id="authArea"></span>
+    </nav>
+  </header>
+
+  <main id="app">
+    <!-- rendered by app.js -->
+  </main>
+
+  <footer>
+    <div class="foot">
+      <div class="pill">AfriMoney: <strong id="afr">—</strong></div>
+      <div class="pill">Orange Money: <strong id="orm">—</strong></div>
+      <div class="btnbar">
+        <a class="btn" href="#/post/goods">Post</a>
+      </div>
+    </div>
+  </footer>
+
+  <script defer src="./app.js"></script>
+</body>
+</html>

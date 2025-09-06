@@ -1,13 +1,15 @@
 /* Sleconomicmarket SPA (localStorage backend)
-   - Home hero (tiny, Home only)
-   - Goods/Services/Rentals/Jobs/Ads
-   - Boost (NLe100/mo), 14-day trial for all except Ads (mandatory boost)
-   - Google location picker, photos
-   - Messaging + Inbox (Seen for users, not for admins)
-   - Save/Share, Search, Listings
-   - Admin & Limited Admin: pin to Top, verify bloggers, campaigns, app ads
-   - Status per post: available | pending | sold
-   - Sierra Leone-only posting for non-admins
+   Mobile-first with big Search & My Location row, category boxes, tiny hero on Home,
+   tiny footer, “Return” button, Google Sign-In + email code verification.
+   Business logic includes:
+   - Goods/Services/Rentals/Jobs/Ads with separate feeds
+   - Boost in NLe (NLe100/mo), 14-day trial for all except Ads (mandatory boost)
+   - Google location picker on Goods/Rentals/Services forms
+   - Messaging + Inbox with "Seen" for users (not for admins)
+   - Save/Share, Search, Listings, Post quick chooser
+   - Admin & Limited Admin: approve limited-admin, pin posts, bloggers, campaigns, app ads
+   - Post status: available | pending | sold
+   - Sierra Leone–only posting for non-admins (COUNTRY_CODE_ALLOW="SL")
 */
 
 const $ = (sel, node=document) => node.querySelector(sel);
@@ -15,12 +17,7 @@ const $$ = (sel, node=document) => Array.from(node.querySelectorAll(sel));
 const cap = s => (s||'').charAt(0).toUpperCase() + (s||'').slice(1);
 const cents = n => 'NLe ' + (Math.round(Number(n||0))/100).toLocaleString();
 
-// ENV
-let AFRIMONEY_NUMBER='—', ORANGEMONEY_NUMBER='—', GOOGLE_MAPS_API_KEY='', ADMIN_EMAILS=[], COUNTRY_CODE_ALLOW='';
-
-// Emojis
-const EMO = { goods:"🛍️", services:"🛠️", rentals:"🏡", jobs:"💼", ads:"📣", search:"🔎", inbox:"💬", listings:"📦", profile:"👤", location:"📍", admin:"🛡️" };
-const titled = (key, text) => `${EMO[key] ? EMO[key]+" " : ""}${text}`;
+let AFRIMONEY_NUMBER='—', ORANGEMONEY_NUMBER='—', GOOGLE_MAPS_API_KEY='', ADMIN_EMAILS=[], COUNTRY_CODE_ALLOW='', GOOGLE_OAUTH_CLIENT_ID='';
 
 // Local DB
 const DB = {
@@ -44,6 +41,7 @@ const uid = () => Math.random().toString(36).slice(2,9)+Date.now().toString(36);
 function inSierraLeone(){ return COUNTRY_CODE_ALLOW === 'SL'; }
 
 // Auth helpers
+function getUserById(id){ const d=DB.data; return d.users.find(u=>u.id===id)||null; }
 function isMainAdmin(user){ return !!user && ADMIN_EMAILS.includes(user.email); }
 function isLimitedAdmin(user){ return !!user && user.limitedAdminStatus==='approved'; }
 function isAdminOrLimited(user){ return isMainAdmin(user) || isLimitedAdmin(user); }
@@ -71,9 +69,8 @@ function notifyUser(userId,title,body,extra={}){
 function listMyNotifications(){ const me=API._requireUser(); if(!me) return []; const d=DB.data; return (d.notifications||[]).filter(n=>n.userId===me.id).sort((a,b)=>b.ts-a.ts); }
 function markAllNotificationsRead(){ const me=API._requireUser(); if(!me) return; const d=DB.data; (d.notifications||[]).forEach(n=>{ if(n.userId===me.id) n.read=true; }); DB.data=d; }
 function sendMailMock(to,subject,body){ if(!to) return; const d=DB.data; d.mails ||= []; d.mails.push({id:uid(),to,subject,body,ts:Date.now()}); DB.data=d; }
-function getUserById(id){ const d=DB.data; return d.users.find(u=>u.id===id)||null; }
 
-// Boop sound + schedule
+// Boop sound
 function boop(){
   try{
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -92,12 +89,7 @@ function playBoopOnNew(){
   const mine=(d.notifications||[]).filter(n=>n.userId===me.id && !n.read);
   if(!mine.length) return;
   const maxTs=Math.max(...mine.map(n=>n.ts||0));
-  if (maxTs>last){
-    const hasBroadcast = mine.some(n=>n.type==='broadcast' && (n.ts||0)>last);
-    if (hasBroadcast || mine.some(n=>(n.ts||0)>last)){
-      boop(); localStorage.setItem(lastKey,String(maxTs));
-    }
-  }
+  if (maxTs>last){ boop(); localStorage.setItem(lastKey,String(maxTs)); }
 }
 
 // Saved
@@ -147,7 +139,9 @@ function sweepTrials(){
   if (changed) DB.data=d;
 }
 
-// API shim (local)
+/* ---------------------------------
+   API shim (localStorage backend)
+-----------------------------------*/
 const API = {
   token: localStorage.getItem('token') || null,
   setToken(t){ this.token=t; localStorage.setItem('token', t||''); renderAuth(); route(); },
@@ -193,24 +187,49 @@ const API = {
   async post(path, body){
     const d=DB.data;
 
-    // Auth
-    if (path==='/api/auth/signup'){
-      const {email,password}=body||{}; if(!email||!password) return {error:'Email & password required'};
+    // Email verification code (demo)
+    if (path==='/api/auth/send-code'){
+      const {email} = body||{}; if(!email) return {error:'Email required'};
+      const code = String(Math.floor(100000 + Math.random()*900000));
+      const key = `sl_verify_${email.toLowerCase()}`;
+      localStorage.setItem(key, JSON.stringify({code, ts: Date.now()}));
+      alert(`Demo verification code (for ${email}): ${code}`);
+      return {ok:true};
+    }
+    if (path==='/api/auth/verify-signup'){
+      const {email,password,code}=body||{}; if(!email||!password||!code) return {error:'All fields required'};
+      const key=`sl_verify_${email.toLowerCase()}`, obj=JSON.parse(localStorage.getItem(key)||'{}');
+      if (!obj.code || obj.code!==String(code)) return {error:'Invalid code'};
+      localStorage.removeItem(key);
       if (d.users.some(u=>u.email===email)) return {error:'User exists'};
-      const u={id:uid(),email,password,limitedAdminStatus:'none'}; d.users.push(u);
+      const u={id:uid(),email,password,limitedAdminStatus:'none',verified:true}; d.users.push(u);
       const tok=uid(); d.sessions[tok]={userId:u.id}; DB.data=d; return {token:tok};
     }
+
+    // Email/password login
     if (path==='/api/auth/login'){
       const {email,password}=body||{}; const u=d.users.find(x=>x.email===email && x.password===password);
       if(!u) return {error:'Invalid credentials'}; const tok=uid(); d.sessions[tok]={userId:u.id}; DB.data=d; return {token:tok};
     }
+
+    // Google Sign-In (ID token from Google Identity Services) — demo trust
+    if (path==='/api/auth/google-id-token'){
+      const {id_token} = body||{}; if(!id_token) return {error:'Missing token'};
+      const payload = JSON.parse(atob(id_token.split('.')[1]||'{}')); // {email, sub}
+      const email = payload.email; if(!email) return {error:'No email in token'};
+      let u=d.users.find(x=>x.email===email);
+      if(!u){ u={id:uid(),email,password:'',limitedAdminStatus:'none',verified:true, googleSub:payload.sub}; d.users.push(u); }
+      const tok=uid(); d.sessions[tok]={userId:u.id}; DB.data=d; return {token:tok};
+    }
+
+    // Legacy mock Google (kept for fallback)
     if (path==='/api/auth/google/mock'){
       const {email}=body||{}; let u=d.users.find(x=>x.email===email);
       if(!u){ u={id:uid(),email,password:'',limitedAdminStatus:'none'}; d.users.push(u); }
       const tok=uid(); d.sessions[tok]={userId:u.id}; DB.data=d; return {token:tok};
     }
 
-    // Admin helpers
+    // Limited admin request
     if (path==='/api/users/request-limited-admin'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
       me.limitedAdminStatus = me.limitedAdminStatus==='approved' ? 'approved' : 'pending';
@@ -234,7 +253,7 @@ const API = {
     }
     if (path==='/api/messages/seen'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if (isAdminOrLimited(me)) return {ok:true, skipped:'admin'};
+      if (isAdminOrLimited(me)) return {ok:true, skipped:'admin'}; // admins don't show "seen"
       const {threadId}=body||{}; const th=d.threads.find(t=>t.id===threadId);
       if (!th || !th.participants.includes(me.id)) return {error:'Not in thread'};
       let changed=0;
@@ -250,28 +269,25 @@ const API = {
       DB.data=d; return {ok:true, saved, count: saveCount(postId)};
     }
 
-    // Posts create
+    // Create posts
     if (path==='/api/posts'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
       if (!isAdminOrLimited(me) && !inSierraLeone()) return {error:'Service available in Sierra Leone only'};
 
-      // Ads must be boosted (min 1 month)
+      // Ads require Boost ≥1 month + payment screenshot
       if (body.category === 'ads' && Number(body.boosted_months || 0) <= 0){
         return { error: 'Advertising posts require Boost (minimum 1 month).' };
       }
 
-      // Require mobile money screenshot when months>0 (trial-only allowed), Ads always require
       const months = Number(body.boosted_months || 0);
       const trialOnly = !!body.boost_trial && months === 0;
       if (body.category === 'ads'){
         if (!(body.payment_screenshot_name && String(body.payment_screenshot_name).trim())){
           return { error:'Advertising requires a mobile money payment screenshot.' };
         }
-      } else {
-        if (!trialOnly && months > 0){
-          if (!(body.payment_screenshot_name && String(body.payment_screenshot_name).trim())){
-            return { error:'Mobile money payment screenshot is required for Boost.' };
-          }
+      } else if (!trialOnly && months > 0){
+        if (!(body.payment_screenshot_name && String(body.payment_screenshot_name).trim())){
+          return { error:'Mobile money payment screenshot is required for Boost.' };
         }
       }
 
@@ -332,9 +348,7 @@ const API = {
         amenities: Array.isArray(body.amenities) ? body.amenities : (body.amenities? [body.amenities] : []),
         utilities: Array.isArray(body.utilities) ? body.utilities : (body.utilities? [body.utilities] : []),
 
-        // NEW: status
         status: 'available',
-
         createdAt:new Date().toISOString()
       };
       d.posts.push(p); DB.data=d; return p;
@@ -448,7 +462,6 @@ const API = {
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
       if (!isMainAdmin(me)) return {error:'Admins only'};
       const { title, message, cta_label, cta_url, audience } = body || {};
-      if (!title || !message) return {error:'Title and message are required'};
 
       let targetEmails = [];
       if (typeof body.target_emails === 'string' && body.target_emails.trim()){
@@ -461,8 +474,8 @@ const API = {
       d.appAds ||= [];
       const ad = {
         id: uid(),
-        title: String(title).trim(),
-        message: String(message).trim(),
+        title: String(title||'').trim(),
+        message: String(message||'').trim(),
         cta_label: (cta_label||'').trim(),
         cta_url: (cta_url||'').trim(),
         image_name: (body.image_name || body.adImg_name || '').trim(),
@@ -514,7 +527,9 @@ const API = {
   }
 };
 
-// ENV load + footer + hero (do NOT render hero here)
+/* -----------------
+   DOMContentLoaded
+-------------------*/
 window.addEventListener('DOMContentLoaded', async () => {
   const env = await fetch('./env.json').then(r=>r.json()).catch(()=>({}));
   AFRIMONEY_NUMBER = env.AFRIMONEY_NUMBER||'—';
@@ -522,36 +537,67 @@ window.addEventListener('DOMContentLoaded', async () => {
   GOOGLE_MAPS_API_KEY = env.GOOGLE_MAPS_API_KEY||'';
   ADMIN_EMAILS = Array.isArray(env.ADMIN_EMAILS)?env.ADMIN_EMAILS:[];
   COUNTRY_CODE_ALLOW = env.COUNTRY_CODE_ALLOW||'';
+  GOOGLE_OAUTH_CLIENT_ID = env.GOOGLE_OAUTH_CLIENT_ID||'';
+
   $('#afr').textContent = AFRIMONEY_NUMBER; $('#orm').textContent = ORANGEMONEY_NUMBER;
+
+  // Wire big search row
+  $('#globalSearch').addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ const q=e.currentTarget.value||''; location.hash = `#/search?q=${encodeURIComponent(q)}`; } });
+  $('#goLocation').addEventListener('click', ()=>{ location.hash = '#/location'; });
+
+  // Init Google Identity Services button when client id is present
+  if (GOOGLE_OAUTH_CLIENT_ID && window.google?.accounts?.id){
+    window.google.accounts.id.initialize({
+      client_id: GOOGLE_OAUTH_CLIENT_ID,
+      callback: async (resp)=>{
+        const r = await API.post('/api/auth/google-id-token', { id_token: resp.credential });
+        if (r.token) API.setToken(r.token); else alert(r.error||'Google sign-in failed');
+      }
+    });
+  }
 
   sweepTrials();
   setInterval(sweepTrials, 60*60*1000);
   playBoopOnNew();
   setInterval(playBoopOnNew, 20000);
 
-  // Footer Post quick chooser
+  // Footer Post quick chooser opens Goods form
   const fp=$('#footPost');
   if (fp){ fp.addEventListener('click', (e)=>{ e.preventDefault(); openQuickPostChooser(); }); }
 
   renderAuth(); route();
 });
 
-// Auth UI
+/* ------------
+   Auth UI
+-------------*/
 function renderAuth(){
   const el=$('#authArea'), me=API._requireUser();
   if (!me){
     el.innerHTML = `
-      <input id="email" placeholder="email" /> <input id="pass" type="password" placeholder="password"/>
-      <button id="loginBtn">Login</button>
-      <button id="signupBtn">Sign up</button>
-      <button id="googleBtn">Continue with Google</button>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <input id="email" placeholder="email" />
+        <input id="pass" type="password" placeholder="password"/>
+        <input id="code" placeholder="verification code (for signup)"/>
+        <button id="sendCodeBtn">Send code</button>
+        <button id="verifySignupBtn">Verify & Sign up</button>
+        <button id="loginBtn">Login</button>
+        <span id="googleBtnContainer"></span>
+      </div>
     `;
+    $('#sendCodeBtn').onclick = async()=>{ const email=$('#email').value.trim(); if(!email) return alert('Enter email'); const r=await API.post('/api/auth/send-code',{email}); if(r.error) alert(r.error); else alert('Code sent (demo shows it in alert).'); };
+    $('#verifySignupBtn').onclick = async()=>{ const email=$('#email').value.trim(), password=$('#pass').value, code=$('#code').value.trim(); const r=await API.post('/api/auth/verify-signup',{email,password,code}); if(r.token){ API.setToken(r.token); } else alert(r.error||'Signup failed'); };
     $('#loginBtn').onclick = async()=>{ const email=$('#email').value, password=$('#pass').value; const r=await API.post('/api/auth/login',{email,password}); if(r.token){ API.setToken(r.token); } else alert(r.error||'Login failed'); };
-    $('#signupBtn').onclick = async()=>{ const email=$('#email').value, password=$('#pass').value; const r=await API.post('/api/auth/signup',{email,password}); if(r.token){ API.setToken(r.token); } else alert(r.error||'Signup failed'); };
-    $('#googleBtn').onclick = async()=>{ const email=prompt('Google email (mock)'); if(!email) return; const r=await API.post('/api/auth/google/mock',{googleId:'mock-'+Date.now(),email}); if(r.token){ API.setToken(r.token); } };
+
+    // Render Google button if GIS available
+    if (GOOGLE_OAUTH_CLIENT_ID && window.google?.accounts?.id){
+      window.google.accounts.id.renderButton($('#googleBtnContainer'), { theme: 'outline', size: 'medium', type:'standard', shape:'pill' });
+    } else {
+      const btn=document.createElement('button'); btn.textContent='Continue with Google'; btn.onclick=()=>alert('Google Sign-In requires GOOGLE_OAUTH_CLIENT_ID in env.json'); $('#googleBtnContainer').appendChild(btn);
+    }
   } else {
     el.innerHTML = `
-      <span class="pill">Hi, ${me.email}</span>
+      <span class="pill" style="background:#fff">Hi, ${me.email}</span>
       <button id="logoutBtn">Logout</button>
       <button id="reqLA">Request Limited Admin</button>
     `;
@@ -560,59 +606,24 @@ function renderAuth(){
   }
   toggleAdminLink();
 }
-function toggleAdminLink(){
-  const me = API._requireUser();
-  const adminLink  = $('#adminLink');
-  const quotesLink = $('#quotesLink');
-  const adCampLink = $('#adCampLink');
-  const adminAppAdsLink = $('#adminAppAdsLink');
-  if (adminLink)  adminLink.style.display  = isMainAdmin(me) ? '' : 'none';
-  if (quotesLink) quotesLink.style.display = isAdminOrLimited(me) ? '' : 'none';
-  if (adCampLink) adCampLink.style.display = (isAdminOrLimited(me) || isApprovedBlogger(me)) ? '' : 'none';
-  if (adminAppAdsLink) adminAppAdsLink.style.display = isMainAdmin(me) ? '' : 'none';
+
+/* ------------
+   Back button
+-------------*/
+function renderBackBtn(show){
+  const app = $('#app');
+  let b = $('#backBtn');
+  if (!b){
+    b=document.createElement('button'); b.id='backBtn'; b.textContent='← Return';
+    b.onclick=()=>{ history.length>1 ? history.back() : (location.hash='#/'); };
+    app.parentNode.insertBefore(b, app);
+  }
+  b.style.display = show ? '' : 'none';
 }
 
-// UI primitives
-const app = $('#app');
-const card = (t,d,b) => { const div=document.createElement('div'); div.className='card'; if(b){ const s=document.createElement('span'); s.className='badge'; s.textContent=b; div.appendChild(s); } div.innerHTML += `<h3>${t}</h3><p class="muted">${d||''}</p>`; return div; };
-
-function attachShareSave(container, post){
-  const bar=document.createElement('div'); bar.className='actions'; bar.style.marginTop='8px';
-  const saved=isSaved(post.id), count=saveCount(post.id);
-  const shareUrl=`${location.origin}${location.pathname}#/item/${post.id}`;
-  bar.innerHTML = `
-    <button class="shareBtn">Share</button>
-    <button class="saveBtn">${saved?'Saved':'Save'}</button>
-    <small class="muted" style="margin-left:6px">${count?`${count} saved`:''}</small>
-  `;
-  bar.querySelector('.shareBtn').onclick = async()=>{
-    const text=`${post.title||'Listing'} — ${post.category||''}`;
-    try{
-      if (navigator.share){ await navigator.share({title:post.title||'Listing', text, url:shareUrl}); }
-      else { await navigator.clipboard.writeText(shareUrl); alert('Link copied!'); }
-    }catch{}
-  };
-  bar.querySelector('.saveBtn').onclick = async()=>{
-    const me=API._requireUser(); if(!me){ alert('Please log in first.'); return; }
-    const r=await API.post('/api/saved/toggle',{postId:post.id});
-    if(r.error){ alert(r.error); return; }
-    bar.querySelector('.saveBtn').textContent = r.saved?'Saved':'Save';
-    const cnt=bar.querySelector('small'); cnt.textContent = r.count?`${r.count} saved`:'';
-  };
-  container.appendChild(bar);
-}
-
-async function messageOwner(post, text){
-  const me = API._requireUser();
-  if (!me){ alert('Please log in first.'); return; }
-  if (me.id === post.userId){ alert('This is your own listing.'); return; }
-  const r = await API.post('/api/messages/start-with-user', { userId: post.userId });
-  if (r.error){ alert(r.error); return; }
-  await API.post('/api/messages/send', { threadId: r.threadId, text });
-  location.hash = `#/chat/${r.threadId}`;
-}
-
-// Photos chooser + quick chooser
+/* ------------
+   Photos picker
+-------------*/
 function photosBlock(idPrefix, title='Photos'){
   return `
   <div class="card" style="margin-top:10px;">
@@ -665,16 +676,11 @@ function renderHero(){
               <linearGradient id="gHat" x1="0" x2="1"><stop offset="0" stop-color="#f3d48a"/><stop offset="1" stop-color="#d4a017"/></linearGradient>
               <linearGradient id="gShirt" x1="0" x2="1"><stop offset="0" stop-color="#ffe6b3"/><stop offset="1" stop-color="#ffcf6f"/></linearGradient>
             </defs>
-            <circle cx="40" cy="40" r="30" fill="#ffe9c4" opacity=".6"/>
-            <circle cx="210" cy="130" r="26" fill="#ffe1a6" opacity=".6"/>
             <path d="M80 78c0-22 18-40 40-40s40 18 40 40" fill="url(#gHat)" stroke="#b1840f" stroke-width="2" />
             <circle cx="120" cy="96" r="22" fill="#ffddb2" stroke="#e7c08c" stroke-width="2"/>
-            <circle cx="112" cy="96" r="3" fill="#2d1f12"/>
-            <circle cx="128" cy="96" r="3" fill="#2d1f12"/>
+            <circle cx="112" cy="96" r="3" fill="#2d1f12"/><circle cx="128" cy="96" r="3" fill="#2d1f12"/>
             <path d="M112 106c4 6 12 6 16 0" stroke="#2d1f12" stroke-width="2" fill="none" stroke-linecap="round"/>
             <rect x="92" y="120" width="56" height="34" rx="8" fill="url(#gShirt)" stroke="#e6c384" stroke-width="2"/>
-            <path d="M102 140 h16" stroke="#b1840f" stroke-width="4" stroke-linecap="round"/>
-            <path d="M140 126 l8 8 -8 8" stroke="#b1840f" stroke-width="4" stroke-linecap="round" fill="none"/>
           </svg>
         </a>
       </div>
@@ -689,13 +695,7 @@ function renderHero(){
       <div class="hero-art">
         <a href="#/post/goods" aria-label="Try Boost">
           <svg viewBox="0 0 240 180" width="100%" height="100%" class="floaty" aria-hidden="true">
-            <defs><linearGradient id="gBolt" x1="0" x2="1"><stop offset="0" stop-color="#ffd766"/><stop offset="1" stop-color="#d4a017"/></linearGradient></defs>
-            <circle cx="50" cy="30" r="6" fill="#ffe9b0"/><circle cx="190" cy="60" r="5" fill="#ffe2a0"/>
-            <circle cx="170" cy="130" r="4" fill="#ffecbf"/><circle cx="70" cy="120" r="5" fill="#ffefcf"/>
-            <path d="M120 20 L90 100 L130 100 L110 160 L160 80 L120 80 Z" fill="url(#gBolt)" stroke="#b1840f" stroke-width="2" />
-            <path d="M60 80 h30" stroke="#e3c06a" stroke-width="4" stroke-linecap="round"/>
-            <path d="M50 95 h40" stroke="#e3c06a" stroke-width="4" stroke-linecap="round"/>
-            <path d="M65 110 h25" stroke="#e3c06a" stroke-width="4" stroke-linecap="round"/>
+            <path d="M120 20 L90 100 L130 100 L110 160 L160 80 L120 80 Z" fill="#ffd766" stroke="#b1840f" stroke-width="2" />
           </svg>
         </a>
       </div>
@@ -804,11 +804,13 @@ function sortPostsForFeed(items){
 }
 
 async function viewHome(){
+  renderBackBtn(false);
+  setHeroVisible(true);
   app.innerHTML = `
-    <h2>${titled('goods','Home · Goods Feed')}</h2>
+    <h2>Home · Goods Feed</h2>
     <p class="muted" style="margin:4px 0 10px 0; font-size:13px;">
       <a href="#/post/goods" style="text-decoration:underline">
-        ⚡ Boost your listing — get faster responses. Try for free
+        Boost your listing — get faster responses. Try for free
       </a>
     </p>
     <div class="grid" id="grid"></div>
@@ -817,6 +819,42 @@ async function viewHome(){
   const grid=$('#grid');
   sortPostsForFeed(posts).forEach(p=> renderCard(p, grid));
   playBoopOnNew();
+}
+
+function attachShareSave(container, post){
+  const bar=document.createElement('div'); bar.className='actions'; bar.style.marginTop='8px';
+  const saved=isSaved(post.id), count=saveCount(post.id);
+  const shareUrl=`${location.origin}${location.pathname}#/item/${post.id}`;
+  bar.innerHTML = `
+    <button class="shareBtn">Share</button>
+    <button class="saveBtn">${saved?'Saved':'Save'}</button>
+    <small class="muted" style="margin-left:6px">${count?`${count} saved`:''}</small>
+  `;
+  bar.querySelector('.shareBtn').onclick = async()=>{
+    const text=`${post.title||'Listing'} — ${post.category||''}`;
+    try{
+      if (navigator.share){ await navigator.share({title:post.title||'Listing', text, url:shareUrl}); }
+      else { await navigator.clipboard.writeText(shareUrl); alert('Link copied!'); }
+    }catch{}
+  };
+  bar.querySelector('.saveBtn').onclick = async()=>{
+    const me=API._requireUser(); if(!me){ alert('Please log in first.'); return; }
+    const r=await API.post('/api/saved/toggle',{postId:post.id});
+    if(r.error){ alert(r.error); return; }
+    bar.querySelector('.saveBtn').textContent = r.saved?'Saved':'Save';
+    const cnt=bar.querySelector('small'); cnt.textContent = r.count?`${r.count} saved`:'';
+  };
+  container.appendChild(bar);
+}
+
+async function messageOwner(post, text){
+  const me = API._requireUser();
+  if (!me){ alert('Please log in first.'); return; }
+  if (me.id === post.userId){ alert('This is your own listing.'); return; }
+  const r = await API.post('/api/messages/start-with-user', { userId: post.userId });
+  if (r.error){ alert(r.error); return; }
+  await API.post('/api/messages/send', { threadId: r.threadId, text });
+  location.hash = `#/chat/${r.threadId}`;
 }
 
 function renderCard(p, grid, opts={}){
@@ -914,7 +952,7 @@ function renderCard(p, grid, opts={}){
     c.appendChild(staff);
   }
 
-  // Owner/Admin: status control (on Listings or if admin)
+  // Owner/Admin: status control on feed when owner view (or admin)
   {
     const me = API._requireUser?.();
     const canEdit = (me && (me.id === p.userId || isAdminOrLimited(me)));
@@ -922,7 +960,6 @@ function renderCard(p, grid, opts={}){
       const ctl = document.createElement('div');
       ctl.className = 'actions';
       ctl.style.marginTop = '8px';
-
       ctl.innerHTML = `
         <label style="display:flex;align-items:center;gap:8px">
           <span class="muted">Status</span>
@@ -934,15 +971,13 @@ function renderCard(p, grid, opts={}){
           <button class="applyBtn">Update</button>
         </label>
       `;
-
       ctl.querySelector('.applyBtn').onclick = async()=>{
         const val = ctl.querySelector('.statusSel').value;
         const r = await API.post('/api/posts/update-status', { postId: p.id, status: val });
         if (r.error){ alert(r.error); return; }
         alert('Status updated.');
-        route(); // refresh
+        route();
       };
-
       c.appendChild(ctl);
     }
   }
@@ -951,7 +986,7 @@ function renderCard(p, grid, opts={}){
   if (p.category==='goods' && meOwner && p.userId===meOwner.id && !(p.boosted_months>0 || trialActive(p))){
     const upsell = document.createElement('small');
     upsell.className = 'muted'; upsell.style.display='block'; upsell.style.marginTop='6px';
-    upsell.innerHTML = `<a href="#/post/goods" style="text-decoration:underline">⚡ Boost this — 14-day trial</a>`;
+    upsell.innerHTML = `<a href="#/post/goods" style="text-decoration:underline">Boost this — 14-day trial</a>`;
     c.appendChild(upsell);
   }
 
@@ -960,8 +995,11 @@ function renderCard(p, grid, opts={}){
 }
 
 async function viewCategory(category){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const label=cap(category);
-  app.innerHTML = `<h2>${titled(category, `${label} Feed`)}</h2><div class="grid" id="grid"></div>`;
+  app.innerHTML = `<h2>${label} Feed</h2><div class="grid" id="grid"></div>`;
   const grid=$('#grid');
 
   // In-page Post CTAs
@@ -982,6 +1020,9 @@ async function viewCategory(category){
 }
 
 async function viewItem(itemId){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const d=DB.data; const p=(d.posts||[]).find(x=>x.id===itemId);
   if(!p){ app.innerHTML='<p>Item not found.</p>'; return; }
   app.innerHTML = `<section><h2>${(p.category||'').toUpperCase()} · ${p.title||''}</h2><div class="card" id="itemCard"></div><p style="margin-top:10px"><a href="#/${p.category||''}">← Back to ${p.category||'feed'}</a></p></section>`;
@@ -1017,30 +1058,36 @@ async function viewItem(itemId){
 }
 
 async function viewSearch(){
-  const q = prompt('Search term:')||'';
+  renderBackBtn(true);
+  setHeroVisible(false);
+
+  const q = new URLSearchParams((location.hash.split('?')[1]||'')).get('q') || prompt('Search term:') || '';
   const d=DB.data;
   const list = d.posts.filter(p=> [p.title,p.description].join(' ').toLowerCase().includes(q.toLowerCase()));
-  app.innerHTML = `<h2>${titled('search','Search')}</h2><p class="muted">Results for: <strong>${q||'—'}</strong></p><div class="grid" id="grid"></div>`;
+  app.innerHTML = `<h2>Search</h2><p class="muted">Results for: <strong>${q||'—'}</strong></p><div class="grid" id="grid"></div>`;
   const grid=$('#grid');
   sortPostsForFeed(list).forEach(p=>{
-    const c=card(p.title, p.description, [(p.is_pinned?'Top':''),(p.boosted_months>0||trialActive(p)?'Premium':''),(p.status!=='available'?p.status.toUpperCase():'')].filter(Boolean).join(' • '));
-    if (p.location_address){ const loc=document.createElement('p'); loc.className='muted'; loc.style.marginTop='6px'; loc.textContent=`📍 ${p.location_address}`; c.appendChild(loc); }
-    attachShareSave(c,p);
-    grid.appendChild(c);
+    renderCard(p, grid);
   });
 }
 
 async function viewListings(){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
   const d=DB.data; const mine=d.posts.filter(p=>p.userId===me.id);
-  app.innerHTML = `<section><h2>${titled('listings','Your Listings')}</h2><div class="grid" id="grid"></div></section>`;
+  app.innerHTML = `<section><h2>Your Listings</h2><div class="grid" id="grid"></div></section>`;
   const grid=$('#grid');
   sortPostsForFeed(mine).forEach(p=> renderCard(p, grid, { ownerControls: true }));
 }
 
 async function viewInbox(){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  app.innerHTML = `<section><h2>${titled('inbox','Inbox')}</h2><div id="threads"></div></section>`;
+  app.innerHTML = `<section><h2>Inbox</h2><div id="threads"></div></section>`;
 
   const notes=listMyNotifications();
   if (notes.length){
@@ -1074,8 +1121,11 @@ async function viewInbox(){
 }
 
 async function viewChat(threadId){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  app.innerHTML = `<section><h2>${titled('inbox','Chat')}</h2><div class="card" style="display:flex;flex-direction:column;gap:8px;height:60vh"><div id="msgs" style="overflow:auto;display:flex;flex-direction:column;gap:8px"></div><div class="row"><div><input id="msgText" placeholder="Type a message"/></div><div><button id="sendBtn">Send</button></div></div></div></section>`;
+  app.innerHTML = `<section><h2>Chat</h2><div class="card" style="display:flex;flex-direction:column;gap:8px;height:60vh"><div id="msgs" style="overflow:auto;display:flex;flex-direction:column;gap:8px"></div><div class="row"><div><input id="msgText" placeholder="Type a message"/></div><div><button id="sendBtn">Send</button></div></div></div></section>`;
 
   async function render(){
     const msgs = await API.get(`/api/messages/thread?tid=${encodeURIComponent(threadId)}`);
@@ -1106,13 +1156,19 @@ async function viewChat(threadId){
 }
 
 async function viewLocation(){
-  app.innerHTML = `<section><h2>${titled('location','My Location')}</h2><p class="muted">Used to improve search and show nearby items. (Static demo)</p></section>`;
+  renderBackBtn(true);
+  setHeroVisible(false);
+
+  app.innerHTML = `<section><h2>My Location</h2><p class="muted">Used to improve search and show nearby items. (Static demo)</p></section>`;
 }
 
 /* ---------- Ads / Bloggers ---------- */
 async function viewAds(){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   app.innerHTML = `<section>
-    <h2>${titled('ads','Advert with Bloggers')}</h2>
+    <h2>Advert with Bloggers</h2>
     <div class="card"><h3>Approved Bloggers</h3><div id="blogList" class="muted">Loading…</div></div>
     <div class="card" style="margin-top:10px"><h3>Actions</h3>
       <div class="actions">
@@ -1127,8 +1183,11 @@ async function viewAds(){
   $('#blogList').innerHTML = (res.bloggers||[]).map(b=>`<div style="margin:6px 0"><strong>${b.platform||'—'}</strong> — ${b.handle||''} · ${b.followers||0} followers · ${cents(b.price_cents||0)} per promo</div>`).join('') || '<p class="muted">No approved bloggers yet.</p>';
 }
 async function viewBecomeBlogger(){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  app.innerHTML = `<section><h2>${titled('ads','Become a Blogger')}</h2>
+  app.innerHTML = `<section><h2>Become a Blogger</h2>
   <div class="card"><form id="bf">
     <div class="row">
       <div><label>Platform <input name="platform" placeholder="TikTok, Instagram…"/></label></div>
@@ -1145,8 +1204,11 @@ async function viewBecomeBlogger(){
   $('#bf').addEventListener('submit', async(e)=>{ e.preventDefault(); const r=await API.postForm('/api/ads/blogger/create', new FormData(e.target)); if(r.error){alert(r.error);return;} alert('Submitted! Pending approval.'); location.hash='#/ads'; });
 }
 async function viewCreateCampaign(){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  app.innerHTML = `<section><h2>${titled('ads','Create Ad Campaign')}</h2>
+  app.innerHTML = `<section><h2>Create Ad Campaign</h2>
   <div class="card"><form id="cf">
     <div class="row">
       <div><label>Product Title <input name="product_title" required/></label></div>
@@ -1162,9 +1224,12 @@ async function viewCreateCampaign(){
   $('#cf').addEventListener('submit', async(e)=>{ e.preventDefault(); const r=await API.postForm('/api/ads/campaign/create', new FormData(e.target)); if(r.error){alert(r.error);return;} alert('Campaign submitted.'); location.hash='#/ads'; });
 }
 async function viewAdCampaigns(){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
   const res=await API.get('/api/ads/campaigns/list'); if(res.error){ app.innerHTML='<p>'+res.error+'</p>'; return; }
-  app.innerHTML = `<section><h2>${titled('ads','Advert with Bloggers · Campaigns')}</h2><div id="wrap" class="grid"></div></section>`;
+  app.innerHTML = `<section><h2>Advert with Bloggers · Campaigns</h2><div id="wrap" class="grid"></div></section>`;
   const wrap=$('#wrap'); (res.campaigns||[]).forEach(c=>{
     const div=document.createElement('div'); div.className='card';
     div.innerHTML=`<h3>${c.product_title}</h3><p class="muted">${c.product_desc||''}</p><p class="muted">Budget: ${cents(c.budget_cents||0)} · Status: ${c.status}</p>`;
@@ -1179,7 +1244,7 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
   wrap.innerHTML = `<h2>${title}</h2><form id="pform"></form>`;
   const f = $('#pform', wrap);
 
-  // Common: photos first (prefill from quick chooser if present)
+  // Common: photos
   f.insertAdjacentHTML('beforeend', photosBlock('post'));
   const pre = window._preUploadPhotos || [];
   const strip = $('#postStrip', wrap);
@@ -1192,7 +1257,6 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
   };
   pre.forEach(addPhotoThumb);
 
-  // Goods / Services / Rentals / Jobs different fields
   if (category==='goods' || category==='jobs' || category==='ads'){
     f.insertAdjacentHTML('beforeend', `
       <div class="row">
@@ -1309,12 +1373,13 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
   submitBar.innerHTML = `<button class="btn" type="submit">Publish</button>`;
   f.appendChild(submitBar);
 
-  // Wire photos chooser (store as simple text names)
+  // Wire photos chooser
   const gal = $('#postGal', wrap), cam = $('#postCam', wrap);
   const pushThumbs = (files)=>{
-    for (const f of files||[]){
-      if (!f || !f.type || !f.type.startsWith('image/')) continue;
-      addPhotoThumb(f);
+    for (const f of files||[]){ if (!f || !f.type || !f.type.startsWith('image/')) continue;
+      const ph=document.createElement('div'); ph.className='ph'; const img=document.createElement('img'); img.alt='upload'; img.src=URL.createObjectURL(f);
+      const x=document.createElement('button'); x.className='x'; x.type='button'; x.textContent='×'; x.onclick=()=>ph.remove();
+      ph.appendChild(img); ph.appendChild(x); $('#postStrip', wrap).appendChild(ph);
     }
   };
   if (gal) gal.addEventListener('change', ()=> pushThumbs(gal.files));
@@ -1364,19 +1429,14 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
     const fd = new FormData(f);
     fd.append('category', category);
 
-    // Add photos names from thumbs
+    // Add a placeholder blob so names are parsed
     const names=[];
-    $$('#postStrip .ph img', wrap).forEach(img=>{
-      const url=img.src; const name = (url.split('/').pop()||'photo').slice(0,64);
-      names.push(name);
-    });
-    if (names.length) fd.append('photos', new Blob([]), names.join(',')); // placeholder (names processed by postForm)
+    $$('#postStrip .ph img', wrap).forEach((img,i)=>{ names.push(`photo_${i+1}.jpg`); });
+    if (names.length) fd.append('photos', new Blob([]), names.join(','));
 
     // Boost screenshot name (if file chosen)
     const pay = $('#paymentScreenshot',wrap);
-    if (pay && pay.files && pay.files[0]){
-      fd.append('payment_screenshot', pay.files[0]);
-    }
+    if (pay && pay.files && pay.files[0]){ fd.append('payment_screenshot', pay.files[0]); }
 
     const r = await API.postForm('/api/posts', fd);
     if (r.error){ alert(r.error); return; }
@@ -1389,12 +1449,15 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
 
 /* ---------- Admin ---------- */
 async function viewAdmin(){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
   if (!isMainAdmin(me)) { app.innerHTML='<p>Admins only.</p>'; return; }
   const d=DB.data;
   const pending = d.users.filter(u=>u.limitedAdminStatus==='pending');
   const allBloggers = d.bloggers||[];
-  app.innerHTML = `<section><h2>${titled('admin','Admin')}</h2>
+  app.innerHTML = `<section><h2>Admin</h2>
     <div class="card">
       <h3>Limited Admin Requests</h3>
       <div id="laList">${pending.length?'':'<p class="muted">No pending requests.</p>'}</div>
@@ -1429,10 +1492,13 @@ async function viewAdmin(){
   });
 }
 async function viewAdminQuotes(){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
   if(!isAdminOrLimited(me)) { app.innerHTML='<p>Staff only.</p>'; return; }
   const r=await API.post('/api/admin/quotes/list',{}); if(r.error){ app.innerHTML='<p>'+r.error+'</p>'; return; }
-  app.innerHTML = `<section><h2>${titled('admin','Quotes')}</h2><div id="qwrap" class="grid"></div></section>`;
+  app.innerHTML = `<section><h2>Quotes</h2><div id="qwrap" class="grid"></div></section>`;
   const wrap=$('#qwrap');
   (r.quotes||[]).forEach(q=>{
     const div=document.createElement('div'); div.className='card';
@@ -1452,9 +1518,12 @@ async function viewAdminQuotes(){
   });
 }
 async function viewAdminAppAds(){
+  renderBackBtn(true);
+  setHeroVisible(false);
+
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
   if(!isMainAdmin(me)) { app.innerHTML='<p>Admins only.</p>'; return; }
-  app.innerHTML = `<section><h2>${titled('admin','App Advertisements')}</h2>
+  app.innerHTML = `<section><h2>App Advertisements</h2>
     <div class="card"><form id="adf">
       <div class="row">
         <div><label>Title <input name="title" required/></label></div>
@@ -1488,6 +1557,22 @@ async function viewAdminAppAds(){
   });
 }
 
+/* ---------- UI helpers ---------- */
+const app = $('#app');
+const card = (t,d,b) => { const div=document.createElement('div'); div.className='card'; if(b){ const s=document.createElement('span'); s.className='badge'; s.textContent=b; div.appendChild(s); } div.innerHTML += `<h3>${t}</h3><p class="muted">${d||''}</p>`; return div; };
+
+function toggleAdminLink(){
+  const me = API._requireUser();
+  const adminLink  = $('#adminLink');
+  const quotesLink = $('#quotesLink');
+  const adCampLink = $('#adCampLink');
+  const adminAppAdsLink = $('#adminAppAdsLink');
+  if (adminLink)  adminLink.style.display  = isMainAdmin(me) ? '' : 'none';
+  if (quotesLink) quotesLink.style.display = isAdminOrLimited(me) ? '' : 'none';
+  if (adCampLink) adCampLink.style.display = (isAdminOrLimited(me) || isApprovedBlogger(me)) ? '' : 'none';
+  if (adminAppAdsLink) adminAppAdsLink.style.display = isMainAdmin(me) ? '' : 'none';
+}
+
 /* ---------- Router ---------- */
 window.addEventListener('hashchange', route);
 async function route(){
@@ -1502,7 +1587,9 @@ async function route(){
 
   if (!hash || seg[0]==='') return viewHome();
 
-  if (seg[0]==='goods')      return viewCategory('goods');   // hero hidden here
+  renderBackBtn(true);
+
+  if (seg[0]==='goods')      return viewCategory('goods');
   if (seg[0]==='services')   return viewCategory('services');
   if (seg[0]==='rentals')    return viewCategory('rentals');
   if (seg[0]==='jobs')       return viewCategory('jobs');

@@ -1,18 +1,17 @@
 /* ===========================
    Minimal SPA + Local DB API
-   (compiled with ALL requested changes, including header hero rotator)
+   (compiled with latest changes)
    =========================== */
 
-// DOM helpers
 const $ = (sel, node=document) => node.querySelector(sel);
 const $$ = (sel, node=document) => Array.from(node.querySelectorAll(sel));
 const cap = s => (s||'').charAt(0).toUpperCase() + (s||'').slice(1);
-const cents = n => 'NLe ' + (Math.round(Number(n||0))/100).toLocaleString(); // display helper
+const cents = n => 'NLe ' + (Math.round(Number(n||0))/100).toLocaleString();
 
 // Global ENV
 let AFRIMONEY_NUMBER='—', ORANGEMONEY_NUMBER='—', GOOGLE_MAPS_API_KEY='', ADMIN_EMAILS=[], COUNTRY_CODE_ALLOW='';
 
-// Emojis for titles
+// Emojis
 const EMO = { goods:"🛍️", services:"🛠️", rentals:"🏡", jobs:"💼", ads:"📣", search:"🔎", inbox:"💬", listings:"📦", profile:"👤", location:"📍", admin:"🛡️" };
 const titled = (key, text) => `${EMO[key] ? EMO[key]+" " : ""}${text}`;
 
@@ -44,7 +43,7 @@ function isAdminOrLimited(user){ return isMainAdmin(user) || isLimitedAdmin(user
 function isApprovedBlogger(user){ if(!user) return false; const d=DB.data; return (d.bloggers||[]).some(b=>b.userId===user.id && b.status==='approved'); }
 function isAdminOrBlogger(u){ return isAdminOrLimited(u) || isApprovedBlogger(u); }
 
-// Notifications / Mail (mock)
+// Notifications / Mail
 function notifyUser(userId,title,body,extra={}){
   const d=DB.data;
   d.notifications ||= [];
@@ -67,7 +66,7 @@ function markAllNotificationsRead(){ const me=API._requireUser(); if(!me) return
 function sendMailMock(to,subject,body){ if(!to) return; const d=DB.data; d.mails ||= []; d.mails.push({id:uid(),to,subject,body,ts:Date.now()}); DB.data=d; }
 function getUserById(id){ const d=DB.data; return d.users.find(u=>u.id===id)||null; }
 
-// Gentle notification sound
+// Boop sound + schedule
 function boop(){
   try{
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -94,7 +93,7 @@ function playBoopOnNew(){
   }
 }
 
-// Saved state
+// Saved
 function isSaved(postId){ const me=API._requireUser?.(); if(!me) return false; const d=DB.data; return (d.saved||[]).some(s=>s.userId===me.id && s.postId===postId); }
 function saveCount(postId){ const d=DB.data; return (d.saved||[]).filter(s=>s.postId===postId).length; }
 
@@ -258,12 +257,12 @@ const API = {
       const months = Number(body.boosted_months || 0);
       const trialOnly = !!body.boost_trial && months === 0;
       if (body.category === 'ads'){
-        if (!(body.payment_screenshot_name && String(body.payment_screenshot_name).trim().length)){
+        if (!(body.payment_screenshot_name && String(body.payment_screenshot_name).trim())){
           return { error:'Advertising requires a mobile money payment screenshot.' };
         }
       } else {
         if (!trialOnly && months > 0){
-          if (!(body.payment_screenshot_name && String(body.payment_screenshot_name).trim().length)){
+          if (!(body.payment_screenshot_name && String(body.payment_screenshot_name).trim())){
             return { error:'Mobile money payment screenshot is required for Boost.' };
           }
         }
@@ -284,7 +283,6 @@ const API = {
 
         is_pinned:false, pinned_at:null, pinned_by:null,
 
-        // Common item facets
         parent_cat: body.parent_cat||'',
         child_cat: body.child_cat||'',
         condition: body.condition||'',
@@ -294,13 +292,12 @@ const API = {
         price_firm: !!(body.price_firm==='1' || body.price_firm===true),
         photos: Array.isArray(body.photos)? body.photos.slice(0,8) : [],
 
-        // Google location
         location_address: (body.location_address||'').trim(),
         location_lat: body.location_lat!=null ? Number(body.location_lat) : null,
         location_lng: body.location_lng!=null ? Number(body.location_lng) : null,
         location_place_id: (body.location_place_id||'').trim(),
 
-        // Services fields
+        // Services
         intro:(body.intro||'').trim(),
         service_desc:(body.service_desc||'').trim(),
         service_parent:(body.service_parent||'').trim(),
@@ -312,7 +309,7 @@ const API = {
         profile_photo_name: (body.profile_photo_name||'').trim(),
         portfolio_names: Array.isArray(body.portfolio_names) ? body.portfolio_names.slice(0,8) : [],
 
-        // Rentals fields
+        // Rentals
         listing_type: (body.listing_type || 'rent'),
         property_parent: (body.property_parent || '').trim(),
         property_child: (body.property_child || '').trim(),
@@ -371,7 +368,7 @@ const API = {
       q.status=action; DB.data=d; return {ok:true,quote:q};
     }
 
-    // Advertising bloggers/campaigns (minimal to keep routes working)
+    // Bloggers/Campaigns
     if (path==='/api/ads/blogger/create'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
       const { platform, handle, price_cents, bio, followers, profile_photo_name } = body||{};
@@ -422,12 +419,22 @@ const API = {
       c.status=action; DB.data=d; return {ok:true,campaign:c};
     }
 
-    // Admin App Broadcast
+    // Admin App Broadcast (NOW supports selected users)
     if (path==='/api/admin/broadcast/create'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
       if (!isMainAdmin(me)) return {error:'Admins only'};
       const { title, message, cta_label, cta_url, audience } = body || {};
       if (!title || !message) return {error:'Title and message are required'};
+
+      // Parse optional selected recipients
+      let targetEmails = [];
+      if (typeof body.target_emails === 'string' && body.target_emails.trim()){
+        try { targetEmails = JSON.parse(body.target_emails); }
+        catch { targetEmails = String(body.target_emails).split(',').map(s=>s.trim()).filter(Boolean); }
+      } else if (Array.isArray(body.target_emails)){
+        targetEmails = body.target_emails.map(String).map(s=>s.trim()).filter(Boolean);
+      }
+
       d.appAds ||= [];
       const ad = {
         id: uid(),
@@ -436,26 +443,33 @@ const API = {
         cta_label: (cta_label||'').trim(),
         cta_url: (cta_url||'').trim(),
         image_name: (body.image_name || body.adImg_name || '').trim(),
-        audience: (audience || 'all'),
+        audience: (audience || (targetEmails.length ? 'selected' : 'all')),
         createdAt: new Date().toISOString(),
         senderId: me.id
       };
       d.appAds.push(ad);
 
-      const users = d.users.slice(); const posts=d.posts||[];
+      // Build recipients
+      let recipients = d.users.filter(u=>u.id!==me.id);
+      const posts=d.posts||[];
       const userHasPostedCat=(uid,cat)=> posts.some(p=>p.userId===uid && p.category===cat);
       const isBoosted=(uid)=> posts.some(p=>p.userId===uid && (Number(p.boosted_months||0)>0));
       const isTrial=(uid)=> posts.some(p=>p.userId===uid && trialActive(p));
-      let recipients = users.filter(u=>u.id!==me.id);
+
       if (ad.audience==='boosted') recipients = recipients.filter(u=>isBoosted(u.id));
       else if (ad.audience==='trial') recipients = recipients.filter(u=>isTrial(u.id));
       else if (ad.audience?.startsWith('cat:')){
         const cat=ad.audience.split(':')[1]; recipients = recipients.filter(u=>userHasPostedCat(u.id,cat));
+      } else if (ad.audience==='selected' && targetEmails.length){
+        const set = new Set(targetEmails.map(e=>e.toLowerCase()));
+        recipients = recipients.filter(u=> set.has((u.email||'').toLowerCase()));
       }
+
       recipients.forEach(u=>{
         notifyUser(u.id, ad.title, ad.message, {type:'broadcast', cta_label:ad.cta_label, cta_url:ad.cta_url, image_name:ad.image_name});
       });
-      DB.data=d; return {ok:true, broadcast:ad, sent:recipients.length};
+      DB.data=d; 
+      return {ok:true, broadcast:ad, sent:recipients.length};
     }
 
     return {};
@@ -478,7 +492,7 @@ const API = {
   }
 };
 
-// ENV load + footer Quick Post wiring + hero render
+// ENV load + footer + hero
 window.addEventListener('DOMContentLoaded', async () => {
   const env = await fetch('./env.json').then(r=>r.json()).catch(()=>({}));
   AFRIMONEY_NUMBER = env.AFRIMONEY_NUMBER||'—';
@@ -497,7 +511,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const fp=$('#footPost');
   if (fp){ fp.addEventListener('click', (e)=>{ e.preventDefault(); openQuickPostChooser(); }); }
 
-  renderHero();          // NEW: header hero rotator
+  renderHero();
   renderAuth(); route();
 });
 
@@ -567,7 +581,6 @@ function attachShareSave(container, post){
   container.appendChild(bar);
 }
 
-// Start a chat with owner with prefilled message
 async function messageOwner(post, text){
   const me = API._requireUser();
   if (!me){ alert('Please log in first.'); return; }
@@ -578,7 +591,7 @@ async function messageOwner(post, text){
   location.hash = `#/chat/${r.threadId}`;
 }
 
-// Photos chooser block + footer quick chooser
+// Photos chooser + quick chooser
 function photosBlock(idPrefix, title='Photos'){
   return `
   <div class="card" style="margin-top:10px;">
@@ -616,7 +629,7 @@ function openQuickPostChooser(){
   ov.addEventListener('click', (e)=>{ if(e.target===ov) close(); });
 }
 
-/* ========== HEADER HERO ROTATOR ========== */
+/* ========== HEADER HERO (smaller, clickable) ========== */
 function renderHero(){
   const host = document.getElementById('heroRotator');
   if (!host || host.dataset.wired) return;
@@ -628,26 +641,28 @@ function renderHero(){
       background: radial-gradient(120% 120% at 0% 0%, #fff7e6 0%, #fdebc8 45%, #f4dfa9 100%);
     ">
       <div class="hero-art">
-        <svg viewBox="0 0 240 180" width="100%" height="100%" class="floaty" aria-hidden="true">
-          <defs>
-            <linearGradient id="gHat" x1="0" x2="1">
-              <stop offset="0" stop-color="#f3d48a"/><stop offset="1" stop-color="#d4a017"/>
-            </linearGradient>
-            <linearGradient id="gShirt" x1="0" x2="1">
-              <stop offset="0" stop-color="#ffe6b3"/><stop offset="1" stop-color="#ffcf6f"/>
-            </linearGradient>
-          </defs>
-          <circle cx="40" cy="40" r="30" fill="#ffe9c4" opacity=".6"/>
-          <circle cx="210" cy="130" r="26" fill="#ffe1a6" opacity=".6"/>
-          <path d="M80 78c0-22 18-40 40-40s40 18 40 40" fill="url(#gHat)" stroke="#b1840f" stroke-width="2" />
-          <circle cx="120" cy="96" r="22" fill="#ffddb2" stroke="#e7c08c" stroke-width="2"/>
-          <circle cx="112" cy="96" r="3" fill="#2d1f12"/>
-          <circle cx="128" cy="96" r="3" fill="#2d1f12"/>
-          <path d="M112 106c4 6 12 6 16 0" stroke="#2d1f12" stroke-width="2" fill="none" stroke-linecap="round"/>
-          <rect x="92" y="120" width="56" height="34" rx="8" fill="url(#gShirt)" stroke="#e6c384" stroke-width="2"/>
-          <path d="M102 140 h16" stroke="#b1840f" stroke-width="4" stroke-linecap="round"/>
-          <path d="M140 126 l8 8 -8 8" stroke="#b1840f" stroke-width="4" stroke-linecap="round" fill="none"/>
-        </svg>
+        <a href="#/services" aria-label="Browse Services">
+          <svg viewBox="0 0 240 180" width="100%" height="100%" class="floaty" aria-hidden="true">
+            <defs>
+              <linearGradient id="gHat" x1="0" x2="1">
+                <stop offset="0" stop-color="#f3d48a"/><stop offset="1" stop-color="#d4a017"/>
+              </linearGradient>
+              <linearGradient id="gShirt" x1="0" x2="1">
+                <stop offset="0" stop-color="#ffe6b3"/><stop offset="1" stop-color="#ffcf6f"/>
+              </linearGradient>
+            </defs>
+            <circle cx="40" cy="40" r="30" fill="#ffe9c4" opacity=".6"/>
+            <circle cx="210" cy="130" r="26" fill="#ffe1a6" opacity=".6"/>
+            <path d="M80 78c0-22 18-40 40-40s40 18 40 40" fill="url(#gHat)" stroke="#b1840f" stroke-width="2" />
+            <circle cx="120" cy="96" r="22" fill="#ffddb2" stroke="#e7c08c" stroke-width="2"/>
+            <circle cx="112" cy="96" r="3" fill="#2d1f12"/>
+            <circle cx="128" cy="96" r="3" fill="#2d1f12"/>
+            <path d="M112 106c4 6 12 6 16 0" stroke="#2d1f12" stroke-width="2" fill="none" stroke-linecap="round"/>
+            <rect x="92" y="120" width="56" height="34" rx="8" fill="url(#gShirt)" stroke="#e6c384" stroke-width="2"/>
+            <path d="M102 140 h16" stroke="#b1840f" stroke-width="4" stroke-linecap="round"/>
+            <path d="M140 126 l8 8 -8 8" stroke="#b1840f" stroke-width="4" stroke-linecap="round" fill="none"/>
+          </svg>
+        </a>
       </div>
       <div class="hero-copy">
         <h3>Let us handle your service needs</h3>
@@ -661,19 +676,21 @@ function renderHero(){
       background: radial-gradient(120% 120% at 100% 0%, #fff7e6 0%, #ffe6b8 45%, #f0d089 100%);
     ">
       <div class="hero-art">
-        <svg viewBox="0 0 240 180" width="100%" height="100%" class="floaty" aria-hidden="true">
-          <defs>
-            <linearGradient id="gBolt" x1="0" x2="1">
-              <stop offset="0" stop-color="#ffd766"/><stop offset="1" stop-color="#d4a017"/>
-            </linearGradient>
-          </defs>
-          <circle cx="50" cy="30" r="6" fill="#ffe9b0"/><circle cx="190" cy="60" r="5" fill="#ffe2a0"/>
-          <circle cx="170" cy="130" r="4" fill="#ffecbf"/><circle cx="70" cy="120" r="5" fill="#ffefcf"/>
-          <path d="M120 20 L90 100 L130 100 L110 160 L160 80 L120 80 Z" fill="url(#gBolt)" stroke="#b1840f" stroke-width="2" />
-          <path d="M60 80 h30" stroke="#e3c06a" stroke-width="4" stroke-linecap="round"/>
-          <path d="M50 95 h40" stroke="#e3c06a" stroke-width="4" stroke-linecap="round"/>
-          <path d="M65 110 h25" stroke="#e3c06a" stroke-width="4" stroke-linecap="round"/>
-        </svg>
+        <a href="#/post/goods" aria-label="Try Boost">
+          <svg viewBox="0 0 240 180" width="100%" height="100%" class="floaty" aria-hidden="true">
+            <defs>
+              <linearGradient id="gBolt" x1="0" x2="1">
+                <stop offset="0" stop-color="#ffd766"/><stop offset="1" stop-color="#d4a017"/>
+              </linearGradient>
+            </defs>
+            <circle cx="50" cy="30" r="6" fill="#ffe9b0"/><circle cx="190" cy="60" r="5" fill="#ffe2a0"/>
+            <circle cx="170" cy="130" r="4" fill="#ffecbf"/><circle cx="70" cy="120" r="5" fill="#ffefcf"/>
+            <path d="M120 20 L90 100 L130 100 L110 160 L160 80 L120 80 Z" fill="url(#gBolt)" stroke="#b1840f" stroke-width="2" />
+            <path d="M60 80 h30" stroke="#e3c06a" stroke-width="4" stroke-linecap="round"/>
+            <path d="M50 95 h40" stroke="#e3c06a" stroke-width="4" stroke-linecap="round"/>
+            <path d="M65 110 h25" stroke="#e3c06a" stroke-width="4" stroke-linecap="round"/>
+          </svg>
+        </a>
       </div>
       <div class="hero-copy">
         <h3>Be the first to see new items — try for free</h3>
@@ -762,7 +779,7 @@ function boostBlock({ category, mandatory=false }){
 </div>`;
 }
 
-// Sorting: pinned → (boost or trial) → boosted months desc → newest
+// Sort feed
 function sortPostsForFeed(items){
   return items.slice().sort((a,b)=>{
     const ap=a.is_pinned?1:0, bp=b.is_pinned?1:0;
@@ -805,7 +822,6 @@ function renderCard(p, grid){
     loc.textContent=`📍 ${p.location_address}`; c.appendChild(loc);
   }
 
-  // Rentals highlights
   if (p.category === 'rentals'){
     const meta=document.createElement('p'); meta.className='muted'; meta.style.marginTop='6px';
     const parts=[];
@@ -819,7 +835,7 @@ function renderCard(p, grid){
     c.appendChild(meta);
   }
 
-  // Per-card actions (Ask / Make offer everywhere; plus Quote for Services)
+  // Ask / Offer / Quote
   {
     const actions = document.createElement('div');
     actions.className = 'actions';
@@ -881,7 +897,6 @@ function renderCard(p, grid){
     c.appendChild(staff);
   }
 
-  // Owner-only upsell for goods
   const meOwner = API._requireUser?.();
   if (p.category==='goods' && meOwner && p.userId===meOwner.id && !(p.boosted_months>0 || trialActive(p))){
     const upsell = document.createElement('small');
@@ -899,7 +914,7 @@ async function viewCategory(category){
   app.innerHTML = `<h2>${titled(category, `${label} Feed`)}</h2><div class="grid" id="grid"></div>`;
   const grid=$('#grid');
 
-  // In-page Post CTAs (moved to page)
+  // In-page Post CTAs
   const ctaNeeded = ['services','rentals','jobs'].includes(category);
   if (ctaNeeded){
     const cta = document.createElement('div');
@@ -1019,10 +1034,10 @@ async function viewLocation(){
   app.innerHTML = `<section><h2>${titled('location','My Location')}</h2><p class="muted">Used to improve search and show nearby items. (Static demo)</p></section>`;
 }
 
-/* ---------- Ads (browse) minimal ---------- */
+/* ---------- Ads / Bloggers ---------- */
 async function viewAds(){
   app.innerHTML = `<section>
-    <h2>${titled('ads','Advertising Hub')}</h2>
+    <h2>${titled('ads','Advert with Bloggers')}</h2>
     <div class="card"><h3>Approved Bloggers</h3><div id="blogList" class="muted">Loading…</div></div>
     <div class="card" style="margin-top:10px"><h3>Actions</h3>
       <div class="actions">
@@ -1074,7 +1089,7 @@ async function viewCreateCampaign(){
 async function viewAdCampaigns(){
   const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
   const res=await API.get('/api/ads/campaigns/list'); if(res.error){ app.innerHTML='<p>'+res.error+'</p>'; return; }
-  app.innerHTML = `<section><h2>${titled('ads','Ad Campaigns')}</h2><div id="wrap" class="grid"></div></section>`;
+  app.innerHTML = `<section><h2>${titled('ads','Advert with Bloggers · Campaigns')}</h2><div id="wrap" class="grid"></div></section>`;
   const wrap=$('#wrap'); (res.campaigns||[]).forEach(c=>{
     const div=document.createElement('div'); div.className='card';
     div.innerHTML=`<h3>${c.product_title}</h3><p class="muted">${c.product_desc||''}</p><p class="muted">Budget: ${cents(c.budget_cents||0)} · Status: ${c.status}</p>`;
@@ -1218,7 +1233,7 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
 
   const form = wrap.querySelector('#pform');
 
-  // Google Maps block(s)
+  // Google Maps blocks
   const wireMaps = async(root)=>{
     const mapEl=root.querySelector('#postMap'); if(!mapEl) return;
     const input=root.querySelector('#placeInput'), addr=root.querySelector('#locAddress');
@@ -1297,7 +1312,6 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
     function refreshListingType(){ const isRent = (listingType.value==='rent'); priceInput?.setAttribute('placeholder', isRent ? 'e.g., 150000 (per month)' : 'e.g., 25000000'); leaseWrap.style.display = isRent ? '' : 'none'; }
     listingType.addEventListener('change', refreshListingType); refreshListingType();
 
-    // Rentals photos
     const phInCam = wrap.querySelector('#rentCam'), phInGal=wrap.querySelector('#rentGal'), strip=wrap.querySelector('#rentStrip'); const files=[];
     function drawRentPreviews(){ strip.innerHTML=''; files.slice(0,8).forEach((f,i)=>{ const ph=document.createElement('div'); ph.className='ph'; const img=document.createElement('img'); img.src=URL.createObjectURL(f); const x=document.createElement('button'); x.className='x'; x.type='button'; x.textContent='×'; x.onclick=()=>{ files.splice(i,1); drawRentPreviews(); }; ph.appendChild(img); ph.appendChild(x); strip.appendChild(ph); }); }
     phInCam?.addEventListener('change', e=>{ const f=e.target.files?.[0]; if(f&&f.type.startsWith('image/')) files.unshift(f); if(files.length>8) files.length=8; drawRentPreviews(); });
@@ -1305,7 +1319,7 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
     form._collectRentals = ()=>({ rental_photo_files: files.slice(0,8) });
   }
 
-  // Goods photos + preload from footer
+  // Goods photos + preload
   if (category === 'goods'){
     const cam = wrap.querySelector('#goodsCam'); const gal=wrap.querySelector('#goodsGal'); const strip=wrap.querySelector('#goodsStrip'); const files=[];
     function drawPrev(){ strip.innerHTML=''; files.slice(0,8).forEach((f,i)=>{ const ph=document.createElement('div'); ph.className='ph'; const img=document.createElement('img'); img.src=URL.createObjectURL(f); const x=document.createElement('button'); x.className='x'; x.type='button'; x.textContent='×'; x.onclick=()=>{ files.splice(i,1); drawPrev(); }; ph.appendChild(img); ph.appendChild(x); strip.appendChild(ph); }); }
@@ -1315,7 +1329,7 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
     form._collectGoods = ()=>({ goods_photo_files: files.slice(0,8) });
   }
 
-  // Boost UI react (price + trial + screenshot requirement)
+  // Boost UI reacts
   const bm = wrap.querySelector('#boostMonths');
   const teaser = wrap.querySelector('#premiumTeaser');
   const priceLine = wrap.querySelector('#boostPriceLine');
@@ -1351,7 +1365,7 @@ function postForm({category, allowBoost=false, boostMandatory=false}){
     const fd=new FormData(form);
     fd.set('category', category);
 
-    // Normalize boost for auto-publish case
+    // Normalize boost
     const bmEl = form.querySelector('#boostMonths');
     if (bmEl) {
       const m = Math.max(0, Math.min(12, parseInt(bmEl.value || '0', 10) || 0));
@@ -1410,10 +1424,12 @@ async function viewAdminQuotes(){
   });
 }
 
-// Admin → App Ads (broadcast)
+// Admin → App Ads (admin-only; select recipients)
 async function viewAdminAppAds(){
   const me = API._requireUser(); 
   if (!me || !isMainAdmin(me)){ app.innerHTML = '<p>Admins only.</p>'; return; }
+
+  const users = DB.data.users.slice().sort((a,b)=>(a.email||'').localeCompare(b.email||''));
 
   app.innerHTML = `<section>
     <h2>${titled('admin','Admin · App Advertisements')}</h2>
@@ -1438,9 +1454,22 @@ async function viewAdminAppAds(){
               <option value="cat:rentals">Users who posted Rentals</option>
               <option value="cat:jobs">Users who posted Jobs</option>
               <option value="cat:ads">Users who posted Ads</option>
+              <option value="selected">Selected users (below)</option>
             </select>
           </label></div>
         </div>
+
+        <div class="row">
+          <div>
+            <label>Selected Users (hold Ctrl/Cmd to pick multiple)
+              <select id="userPick" multiple size="6" style="width:100%">
+                ${users.map(u=>`<option value="${u.email}">${u.email}</option>`).join('')}
+              </select>
+            </label>
+            <small class="muted">If “Selected users” is chosen above, only those you pick here will receive the ad.</small>
+          </div>
+        </div>
+
         <div class="actions" style="margin-top:8px">
           <button type="submit" class="btn">Send Broadcast</button>
         </div>
@@ -1455,9 +1484,13 @@ async function viewAdminAppAds(){
   $('#bf').addEventListener('submit', async (e)=>{
     e.preventDefault();
     const fd=new FormData(e.target);
+    if (fd.get('audience') === 'selected'){
+      const picks = Array.from($('#userPick').selectedOptions).map(o=>o.value);
+      fd.set('target_emails', JSON.stringify(picks));
+    }
     const res=await API.postForm('/api/admin/broadcast/create', fd);
     if(res.error){ alert(res.error); return; }
-    alert('Broadcast sent!');
+    alert(`Broadcast sent! (${res.sent||0} recipients)`);
     route('#/admin/app-ads');
   });
 

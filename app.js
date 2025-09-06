@@ -1,14 +1,21 @@
-/* ===========================
-   Minimal SPA + Local DB API
-   (compiled with latest changes)
-   =========================== */
+/* Sleconomicmarket SPA (localStorage backend)
+   - Home hero (tiny, Home only)
+   - Goods/Services/Rentals/Jobs/Ads
+   - Boost (NLe100/mo), 14-day trial for all except Ads (mandatory boost)
+   - Google location picker, photos
+   - Messaging + Inbox (Seen for users, not for admins)
+   - Save/Share, Search, Listings
+   - Admin & Limited Admin: pin to Top, verify bloggers, campaigns, app ads
+   - Status per post: available | pending | sold
+   - Sierra Leone-only posting for non-admins
+*/
 
 const $ = (sel, node=document) => node.querySelector(sel);
 const $$ = (sel, node=document) => Array.from(node.querySelectorAll(sel));
 const cap = s => (s||'').charAt(0).toUpperCase() + (s||'').slice(1);
 const cents = n => 'NLe ' + (Math.round(Number(n||0))/100).toLocaleString();
 
-// Global ENV
+// ENV
 let AFRIMONEY_NUMBER='—', ORANGEMONEY_NUMBER='—', GOOGLE_MAPS_API_KEY='', ADMIN_EMAILS=[], COUNTRY_CODE_ALLOW='';
 
 // Emojis
@@ -243,7 +250,7 @@ const API = {
       DB.data=d; return {ok:true, saved, count: saveCount(postId)};
     }
 
-    // Posts
+    // Posts create
     if (path==='/api/posts'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
       if (!isAdminOrLimited(me) && !inSierraLeone()) return {error:'Service available in Sierra Leone only'};
@@ -325,9 +332,26 @@ const API = {
         amenities: Array.isArray(body.amenities) ? body.amenities : (body.amenities? [body.amenities] : []),
         utilities: Array.isArray(body.utilities) ? body.utilities : (body.utilities? [body.utilities] : []),
 
+        // NEW: status
+        status: 'available',
+
         createdAt:new Date().toISOString()
       };
       d.posts.push(p); DB.data=d; return p;
+    }
+
+    // Update post status
+    if (path === '/api/posts/update-status'){
+      const me = this._requireUser(); if(!me) return {error:'Unauthorized'};
+      const { postId, status } = body || {};
+      if (!['available','pending','sold'].includes(status)) return {error:'Bad status'};
+      const p = d.posts.find(x => x.id === postId);
+      if (!p) return {error:'Post not found'};
+      const canEdit = (p.userId === me.id) || isAdminOrLimited(me);
+      if (!canEdit) return {error:'Forbidden'};
+      p.status = status;
+      DB.data = d;
+      return {ok:true, post:p};
     }
 
     // Pin/Unpin
@@ -419,14 +443,13 @@ const API = {
       c.status=action; DB.data=d; return {ok:true,campaign:c};
     }
 
-    // Admin App Broadcast (NOW supports selected users)
+    // Admin App Broadcast (selected users supported)
     if (path==='/api/admin/broadcast/create'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
       if (!isMainAdmin(me)) return {error:'Admins only'};
       const { title, message, cta_label, cta_url, audience } = body || {};
       if (!title || !message) return {error:'Title and message are required'};
 
-      // Parse optional selected recipients
       let targetEmails = [];
       if (typeof body.target_emails === 'string' && body.target_emails.trim()){
         try { targetEmails = JSON.parse(body.target_emails); }
@@ -449,7 +472,6 @@ const API = {
       };
       d.appAds.push(ad);
 
-      // Build recipients
       let recipients = d.users.filter(u=>u.id!==me.id);
       const posts=d.posts||[];
       const userHasPostedCat=(uid,cat)=> posts.some(p=>p.userId===uid && p.category===cat);
@@ -492,7 +514,7 @@ const API = {
   }
 };
 
-// ENV load + footer + hero
+// ENV load + footer + hero (do NOT render hero here)
 window.addEventListener('DOMContentLoaded', async () => {
   const env = await fetch('./env.json').then(r=>r.json()).catch(()=>({}));
   AFRIMONEY_NUMBER = env.AFRIMONEY_NUMBER||'—';
@@ -511,7 +533,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   const fp=$('#footPost');
   if (fp){ fp.addEventListener('click', (e)=>{ e.preventDefault(); openQuickPostChooser(); }); }
 
-  renderHero();
   renderAuth(); route();
 });
 
@@ -629,27 +650,20 @@ function openQuickPostChooser(){
   ov.addEventListener('click', (e)=>{ if(e.target===ov) close(); });
 }
 
-/* ========== HEADER HERO (smaller, clickable) ========== */
+/* ========== HEADER HERO (TINY + clickable) ========== */
 function renderHero(){
   const host = document.getElementById('heroRotator');
   if (!host || host.dataset.wired) return;
   host.dataset.wired = '1';
 
   host.innerHTML = `
-    <!-- Slide 1: Services -->
-    <div class="hero-slide active" data-kind="services" style="
-      background: radial-gradient(120% 120% at 0% 0%, #fff7e6 0%, #fdebc8 45%, #f4dfa9 100%);
-    ">
+    <div class="hero-slide active" data-kind="services" style="background: radial-gradient(120% 120% at 0% 0%, #fff7e6 0%, #fdebc8 45%, #f4dfa9 100%);">
       <div class="hero-art">
         <a href="#/services" aria-label="Browse Services">
           <svg viewBox="0 0 240 180" width="100%" height="100%" class="floaty" aria-hidden="true">
             <defs>
-              <linearGradient id="gHat" x1="0" x2="1">
-                <stop offset="0" stop-color="#f3d48a"/><stop offset="1" stop-color="#d4a017"/>
-              </linearGradient>
-              <linearGradient id="gShirt" x1="0" x2="1">
-                <stop offset="0" stop-color="#ffe6b3"/><stop offset="1" stop-color="#ffcf6f"/>
-              </linearGradient>
+              <linearGradient id="gHat" x1="0" x2="1"><stop offset="0" stop-color="#f3d48a"/><stop offset="1" stop-color="#d4a017"/></linearGradient>
+              <linearGradient id="gShirt" x1="0" x2="1"><stop offset="0" stop-color="#ffe6b3"/><stop offset="1" stop-color="#ffcf6f"/></linearGradient>
             </defs>
             <circle cx="40" cy="40" r="30" fill="#ffe9c4" opacity=".6"/>
             <circle cx="210" cy="130" r="26" fill="#ffe1a6" opacity=".6"/>
@@ -671,18 +685,11 @@ function renderHero(){
       </div>
     </div>
 
-    <!-- Slide 2: Boost -->
-    <div class="hero-slide" data-kind="boost" style="
-      background: radial-gradient(120% 120% at 100% 0%, #fff7e6 0%, #ffe6b8 45%, #f0d089 100%);
-    ">
+    <div class="hero-slide" data-kind="boost" style="background: radial-gradient(120% 120% at 100% 0%, #fff7e6 0%, #ffe6b8 45%, #f0d089 100%);">
       <div class="hero-art">
         <a href="#/post/goods" aria-label="Try Boost">
           <svg viewBox="0 0 240 180" width="100%" height="100%" class="floaty" aria-hidden="true">
-            <defs>
-              <linearGradient id="gBolt" x1="0" x2="1">
-                <stop offset="0" stop-color="#ffd766"/><stop offset="1" stop-color="#d4a017"/>
-              </linearGradient>
-            </defs>
+            <defs><linearGradient id="gBolt" x1="0" x2="1"><stop offset="0" stop-color="#ffd766"/><stop offset="1" stop-color="#d4a017"/></linearGradient></defs>
             <circle cx="50" cy="30" r="6" fill="#ffe9b0"/><circle cx="190" cy="60" r="5" fill="#ffe2a0"/>
             <circle cx="170" cy="130" r="4" fill="#ffecbf"/><circle cx="70" cy="120" r="5" fill="#ffefcf"/>
             <path d="M120 20 L90 100 L130 100 L110 160 L160 80 L120 80 Z" fill="url(#gBolt)" stroke="#b1840f" stroke-width="2" />
@@ -708,6 +715,12 @@ function renderHero(){
     slides[idx].classList.add('active');
   }, 60 * 1000);
 }
+function setHeroVisible(on){
+  const sec = document.getElementById('heroSection');
+  if(!sec) return;
+  sec.style.display = on ? '' : 'none';
+  if (on) renderHero();
+}
 
 /* ===========================
    Views
@@ -732,7 +745,6 @@ function googleLocationBlock(){
 </div>`;
 }
 
-// Boost UI
 function boostBlock({ category, mandatory=false }){
   const trialPart = !mandatory ? `
     <label style="display:flex;gap:8px;align-items:center;margin-top:6px;">
@@ -779,7 +791,6 @@ function boostBlock({ category, mandatory=false }){
 </div>`;
 }
 
-// Sort feed
 function sortPostsForFeed(items){
   return items.slice().sort((a,b)=>{
     const ap=a.is_pinned?1:0, bp=b.is_pinned?1:0;
@@ -808,14 +819,16 @@ async function viewHome(){
   playBoopOnNew();
 }
 
-function renderCard(p, grid){
+function renderCard(p, grid, opts={}){
   const bits=[];
   if (p.is_pinned) bits.push('Top');
   if (p.boosted_months>0 || trialActive(p)) bits.push('Premium');
   if (p.price_firm) bits.push('Firm');
   if (p.condition) bits.push(p.condition);
+  if (p.status && p.status !== 'available') bits.push(p.status.toUpperCase());
 
   const c = card(p.title, p.description, bits.join(' • '));
+  if (p.status === 'sold'){ c.style.opacity = '0.6'; }
 
   if (p.location_address){
     const loc=document.createElement('p'); loc.className='muted'; loc.style.marginTop='6px';
@@ -835,47 +848,51 @@ function renderCard(p, grid){
     c.appendChild(meta);
   }
 
-  // Ask / Offer / Quote
+  // Ask / Offer / Quote (blocked if SOLD)
   {
-    const actions = document.createElement('div');
-    actions.className = 'actions';
-    actions.style.marginTop = '8px';
-
     const me=API._requireUser?.();
-    if (!me || me.id !== p.userId){
-      const askBtn = document.createElement('button');
-      askBtn.textContent = 'Ask';
-      askBtn.title = 'Is this still available?';
-      askBtn.onclick = ()=> messageOwner(p, `Hi! Is "${p.title}" still available?`);
+    const isOwner = !!me && me.id === p.userId;
+    const canMessage = (p.status !== 'sold');
 
-      const offerBtn = document.createElement('button');
-      offerBtn.textContent = 'Make an offer';
-      offerBtn.onclick = ()=>{
-        const amount = prompt('Your offer (NLe):');
-        if (amount == null || !String(amount).trim()) return;
-        const note = prompt('Add a note (optional):') || '';
-        messageOwner(p, `Offer for "${p.title}": NLe ${String(amount).trim()}${note ? ` — ${note}` : ''}`);
-      };
+    if (!me || !isOwner){
+      if (canMessage){
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        actions.style.marginTop = '8px';
 
-      actions.appendChild(askBtn);
-      actions.appendChild(offerBtn);
+        const askBtn = document.createElement('button');
+        askBtn.textContent = 'Ask';
+        askBtn.title = 'Is this still available?';
+        askBtn.onclick = ()=> messageOwner(p, `Hi! Is "${p.title}" still available?`);
+        actions.appendChild(askBtn);
 
-      if (p.category === 'services'){
-        const quoteBtn = document.createElement('button');
-        quoteBtn.textContent = 'Request Quote';
-        quoteBtn.onclick = async()=>{
-          const me = API._requireUser(); if(!me){ alert('Please log in first.'); return; }
-          const details = prompt('Describe the work and timeline for your quote:');
-          if (details == null || !details.trim()) return;
-          const r = await API.post('/api/quotes/create', { postId: p.id, details });
-          if (r.error){ alert(r.error); return; }
-          alert('Quote request sent! We also messaged the provider.');
-          location.hash = '#/inbox';
+        const offerBtn = document.createElement('button');
+        offerBtn.textContent = 'Make an offer';
+        offerBtn.onclick = ()=>{
+          const amount = prompt('Your offer (NLe):');
+          if (amount == null || !String(amount).trim()) return;
+          const note = prompt('Add a note (optional):') || '';
+          messageOwner(p, `Offer for "${p.title}": NLe ${String(amount).trim()}${note ? ` — ${note}` : ''}`);
         };
-        actions.appendChild(quoteBtn);
-      }
+        actions.appendChild(offerBtn);
 
-      c.appendChild(actions);
+        if (p.category === 'services'){
+          const quoteBtn = document.createElement('button');
+          quoteBtn.textContent = 'Request Quote';
+          quoteBtn.onclick = async()=>{
+            const me = API._requireUser(); if(!me){ alert('Please log in first.'); return; }
+            const details = prompt('Describe the work and timeline for your quote:');
+            if (details == null || !details.trim()) return;
+            const r = await API.post('/api/quotes/create', { postId: p.id, details });
+            if (r.error){ alert(r.error); return; }
+            alert('Quote request sent! We also messaged the provider.');
+            location.hash = '#/inbox';
+          };
+          actions.appendChild(quoteBtn);
+        }
+
+        c.appendChild(actions);
+      }
     }
   }
 
@@ -895,6 +912,39 @@ function renderCard(p, grid){
       staff.appendChild(phone);
     }
     c.appendChild(staff);
+  }
+
+  // Owner/Admin: status control (on Listings or if admin)
+  {
+    const me = API._requireUser?.();
+    const canEdit = (me && (me.id === p.userId || isAdminOrLimited(me)));
+    if ((opts.ownerControls || isAdminOrLimited(me)) && canEdit){
+      const ctl = document.createElement('div');
+      ctl.className = 'actions';
+      ctl.style.marginTop = '8px';
+
+      ctl.innerHTML = `
+        <label style="display:flex;align-items:center;gap:8px">
+          <span class="muted">Status</span>
+          <select class="statusSel">
+            <option value="available" ${p.status==='available'?'selected':''}>Available</option>
+            <option value="pending" ${p.status==='pending'?'selected':''}>Pending</option>
+            <option value="sold" ${p.status==='sold'?'selected':''}>Sold</option>
+          </select>
+          <button class="applyBtn">Update</button>
+        </label>
+      `;
+
+      ctl.querySelector('.applyBtn').onclick = async()=>{
+        const val = ctl.querySelector('.statusSel').value;
+        const r = await API.post('/api/posts/update-status', { postId: p.id, status: val });
+        if (r.error){ alert(r.error); return; }
+        alert('Status updated.');
+        route(); // refresh
+      };
+
+      c.appendChild(ctl);
+    }
   }
 
   const meOwner = API._requireUser?.();
@@ -935,9 +985,34 @@ async function viewItem(itemId){
   const d=DB.data; const p=(d.posts||[]).find(x=>x.id===itemId);
   if(!p){ app.innerHTML='<p>Item not found.</p>'; return; }
   app.innerHTML = `<section><h2>${(p.category||'').toUpperCase()} · ${p.title||''}</h2><div class="card" id="itemCard"></div><p style="margin-top:10px"><a href="#/${p.category||''}">← Back to ${p.category||'feed'}</a></p></section>`;
-  const c = card(p.title, p.description, [p.is_pinned?'Top':'',(p.boosted_months>0||trialActive(p))?'Premium':'',p.condition||''].filter(Boolean).join(' • '));
+  const c = card(p.title, p.description, [p.is_pinned?'Top':'',(p.boosted_months>0||trialActive(p))?'Premium':'',p.condition||'',(p.status!=='available'?p.status.toUpperCase():'')].filter(Boolean).join(' • '));
   if (p.location_address){ const loc=document.createElement('p'); loc.className='muted'; loc.style.marginTop='6px'; loc.textContent=`📍 ${p.location_address}`; c.appendChild(loc); }
   attachShareSave(c,p);
+
+  // Owner/Admin control on item page
+  const me = API._requireUser?.();
+  const canEdit = (me && (me.id === p.userId || isAdminOrLimited(me)));
+  if (canEdit){
+    const ctl = document.createElement('div'); ctl.className='actions'; ctl.style.marginTop='8px';
+    ctl.innerHTML = `
+      <label style="display:flex;align-items:center;gap:8px">
+        <span class="muted">Status</span>
+        <select class="statusSel">
+          <option value="available" ${p.status==='available'?'selected':''}>Available</option>
+          <option value="pending" ${p.status==='pending'?'selected':''}>Pending</option>
+          <option value="sold" ${p.status==='sold'?'selected':''}>Sold</option>
+        </select>
+        <button class="applyBtn">Update</button>
+      </label>`;
+    ctl.querySelector('.applyBtn').onclick = async()=>{
+      const val = ctl.querySelector('.statusSel').value;
+      const r = await API.post('/api/posts/update-status', { postId: p.id, status: val });
+      if (r.error){ alert(r.error); return; }
+      alert('Status updated.'); route();
+    };
+    c.appendChild(ctl);
+  }
+
   $('#itemCard').appendChild(c);
 }
 
@@ -948,7 +1023,7 @@ async function viewSearch(){
   app.innerHTML = `<h2>${titled('search','Search')}</h2><p class="muted">Results for: <strong>${q||'—'}</strong></p><div class="grid" id="grid"></div>`;
   const grid=$('#grid');
   sortPostsForFeed(list).forEach(p=>{
-    const c=card(p.title, p.description, [(p.is_pinned?'Top':''),(p.boosted_months>0||trialActive(p)?'Premium':'')].filter(Boolean).join(' • '));
+    const c=card(p.title, p.description, [(p.is_pinned?'Top':''),(p.boosted_months>0||trialActive(p)?'Premium':''),(p.status!=='available'?p.status.toUpperCase():'')].filter(Boolean).join(' • '));
     if (p.location_address){ const loc=document.createElement('p'); loc.className='muted'; loc.style.marginTop='6px'; loc.textContent=`📍 ${p.location_address}`; c.appendChild(loc); }
     attachShareSave(c,p);
     grid.appendChild(c);
@@ -960,7 +1035,7 @@ async function viewListings(){
   const d=DB.data; const mine=d.posts.filter(p=>p.userId===me.id);
   app.innerHTML = `<section><h2>${titled('listings','Your Listings')}</h2><div class="grid" id="grid"></div></section>`;
   const grid=$('#grid');
-  sortPostsForFeed(mine).forEach(p=> renderCard(p,grid));
+  sortPostsForFeed(mine).forEach(p=> renderCard(p, grid, { ownerControls: true }));
 }
 
 async function viewInbox(){
@@ -1098,417 +1173,319 @@ async function viewAdCampaigns(){
 }
 
 /* ---------- Post forms ---------- */
-
 function postForm({category, allowBoost=false, boostMandatory=false}){
-  const wrap=document.createElement('div');
-  const niceTitle=(category==='jobs')?'Post a Job':`Create ${cap(category)} Post`;
-  wrap.innerHTML = `
-  <h2>${EMO[category]||''} ${niceTitle}</h2>
-  <form id="pform">
-    <div class="row">
-      <div><label>Title <input name="title" required /></label></div>
-      <div><label>Price (¢) <input name="price_cents" type="number" min="0" /></label></div>
-    </div>
+  const wrap = document.createElement('div');
+  const title = `Create ${cap(category)} Post`;
+  wrap.innerHTML = `<h2>${title}</h2><form id="pform"></form>`;
+  const f = $('#pform', wrap);
 
-    ${category!=='services' ? googleLocationBlock() : ''}
+  // Common: photos first (prefill from quick chooser if present)
+  f.insertAdjacentHTML('beforeend', photosBlock('post'));
+  const pre = window._preUploadPhotos || [];
+  const strip = $('#postStrip', wrap);
+  const addPhotoThumb = (file)=>{
+    const ph=document.createElement('div'); ph.className='ph';
+    const img=document.createElement('img'); img.alt='upload'; img.src=URL.createObjectURL(file);
+    const x=document.createElement('button'); x.className='x'; x.type='button'; x.textContent='×';
+    x.onclick=()=>ph.remove();
+    ph.appendChild(img); ph.appendChild(x); strip.appendChild(ph);
+  };
+  pre.forEach(addPhotoThumb);
 
-    ${category==='goods' ? photosBlock('goods') : ''}
-
-    ${category==='services' ? `
-      <div class="card" style="margin-top:10px;">
-        <h3 style="margin:4px 0 8px 0;">About Your Service</h3>
-        <div class="row">
-          <div><label>Introduction (short) <input name="intro" placeholder="e.g., Reliable plumber with 8+ years experience" /></label></div>
-        </div>
-        <div class="row">
-          <div><label>Parent Category <select name="service_parent" id="svcParent"></select></label></div>
-          <div><label>Sub-Category <select name="service_child" id="svcChild"></select></label></div>
-        </div>
-        <div class="row">
-          <div><label>Price Model
-            <select name="price_model" id="priceModel">
-              <option value="">— Select —</option><option value="hourly">Hourly</option><option value="flat">Flat Rate</option><option value="negotiable">Negotiable</option><option value="free">Free</option>
-            </select></label></div>
-          <div><label>Minimum Price (¢) <input name="min_price_cents" type="number" min="0" placeholder="e.g., 50000" /></label></div>
-        </div>
-        <div class="row">
-          <div><label>Service Area Radius (km) <input name="service_radius_km" type="number" min="0" placeholder="e.g., 10" /></label></div>
-          <div><label>Availability (days) <div id="daysBox" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;"></div></label></div>
-        </div>
-        <label>Services Description <textarea name="service_desc" placeholder="Describe what you offer…"></textarea></label>
+  // Goods / Services / Rentals / Jobs different fields
+  if (category==='goods' || category==='jobs' || category==='ads'){
+    f.insertAdjacentHTML('beforeend', `
+      <div class="row">
+        <div><label>Title <input name="title" required /></label></div>
+        <div><label>Price (¢) <input name="price_cents" type="number" min="0" /></label></div>
       </div>
-
-      ${googleLocationBlock()}
-
-      <div class="card" style="margin-top:10px;">
-        <h3 style="margin:4px 0 8px 0;">Photos</h3>
+      <label>Description<textarea name="description"></textarea></label>
+    `);
+    if (category==='goods'){
+      f.insertAdjacentHTML('beforeend', `
         <div class="row">
-          <div>
-            <label>Profile Picture <input type="file" id="profilePic" accept="image/*" /></label>
-            <div id="profilePrev" class="photos" style="margin-top:6px;"></div>
-          </div>
-          <div>
-            <label>Portfolio (up to 8) <input type="file" id="portfolio" accept="image/*" multiple /></label>
-            <div id="portfolioStrip" class="photos" style="margin-top:6px;"></div>
-          </div>
-        </div>
-      </div>
-    ` : ''}
-
-    ${category==='rentals' ? `
-      <div class="card" style="margin-top:10px;">
-        <h3 style="margin:4px 0 8px 0;">Property Details</h3>
-
-        <div class="row">
-          <div>
-            <label>Listing Type
-              <select name="listing_type" id="listingType" required>
-                <option value="rent" selected>Rent</option>
-                <option value="sell">Sell</option>
-              </select>
-            </label>
-          </div>
-          <div>
-            <label>Property Category
-              <select name="property_parent" id="rentParent" required></select>
-            </label>
-          </div>
-          <div>
-            <label>Sub-category
-              <select name="property_child" id="rentChild" required></select>
-            </label>
-          </div>
-        </div>
-
-        <div class="row">
-          <div><label>Bedrooms
-            <select name="bedrooms" id="bedrooms" required>
-              <option value="0">Studio</option><option value="1">1 Bedroom</option><option value="2">2 Bedrooms</option>
-              <option value="3">3 Bedrooms</option><option value="4">4 Bedrooms</option><option value="5">5 Bedrooms</option><option value="6+">6+ Bedrooms</option>
+          <div><label>Parent Category
+            <select name="parent_cat">
+              <option>Electronics & Media</option><option>Home & Garden</option><option>Home Decoration</option>
+              <option>Clothing & Shoes</option><option>Vehicles</option><option>Sports & Outdoors</option>
+              <option>Baby & Kids</option><option>Health & Beauty</option><option>Pets</option><option>Other</option>
             </select></label></div>
-          <div><label>Bathrooms
-            <select name="bathrooms" id="bathrooms" required>
-              <option value="1">1 Bath</option><option value="1.5">1.5 Baths</option><option value="2">2 Baths</option><option value="3">3 Baths</option><option value="4+">4+ Baths</option>
-            </select></label></div>
-          <div><label>Furnished
-            <select name="furnished" id="furnished"><option value="no">No</option><option value="partly">Partly</option><option value="yes">Yes</option></select></label></div>
+          <div><label>Sub-category (Child) <input name="child_cat" placeholder="Phones, Laptops, Sofas…"/></label></div>
         </div>
-
         <div class="row">
           <div><label>Condition
-            <select name="condition" id="condition"><option value="">— Select —</option><option>New</option><option>Like New</option><option>Good</option><option>Needs Work</option></select></label></div>
-          <div><label>Size (m²) <input name="size_sqm" type="number" min="0" placeholder="e.g., 85"/></label></div>
-          <div><label>Floor Level <input name="floor_level" type="number" min="0" placeholder="e.g., 2"/></label></div>
+            <select name="condition"><option value="">—</option><option>New</option><option>Like new</option><option>Normal wear</option><option>Needs repair</option></select>
+          </label></div>
+          <div><label>Type <input name="item_type" placeholder="Type/model"/></label></div>
         </div>
-
         <div class="row">
-          <div><label>Parking Spots <input name="parking_spots" type="number" min="0" placeholder="e.g., 1"/></label></div>
-          <div><label>Available From <input name="available_from" type="date"/></label></div>
-          <div id="leaseTermWrap"><label>Lease Term
-            <select name="lease_term" id="leaseTerm"><option value="">— Select —</option><option>Month-to-month</option><option>6 months</option><option>12 months</option><option>24 months</option></select></label></div>
+          <div><label>Brand <input name="brand" /></label></div>
+          <div><label>Color <input name="color" /></label></div>
+          <div><label>Price firm? <select name="price_firm"><option value="">No</option><option value="1">Yes</option></select></label></div>
         </div>
-
-        <div class="row">
-          <div><label>Deposit (¢) <input name="deposit_cents" type="number" min="0" placeholder="e.g., 300000"/></label></div>
-          <div><label>Price Firm <select name="price_firm"><option value="">No</option><option value="1">Yes</option></select></label></div>
-          <div><label>Pets Allowed <select name="pets_allowed"><option value="">—</option><option value="no">No</option><option value="yes">Yes</option></select></label></div>
-        </div>
-
-        <div class="row">
-          <div><label>Amenities</label><div id="amenitiesBox" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px"></div></div>
-          <div><label>Utilities Included</label><div id="utilitiesBox" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px"></div></div>
-        </div>
-      </div>
-
-      ${photosBlock('rent')}
-    ` : ''}
-
-    ${allowBoost? boostBlock({ category, mandatory: !!boostMandatory }): ''}
-
-    <label>Description <textarea name="description"></textarea></label>
-
-    <div class="actions"><button type="submit" id="submitBtn">${category==='jobs'?'Post Job':'Publish'}</button></div>
-  </form>
-  `;
-
-  const form = wrap.querySelector('#pform');
-
-  // Google Maps blocks
-  const wireMaps = async(root)=>{
-    const mapEl=root.querySelector('#postMap'); if(!mapEl) return;
-    const input=root.querySelector('#placeInput'), addr=root.querySelector('#locAddress');
-    const latEl=root.querySelector('#locLat'), lngEl=root.querySelector('#locLng'), pidEl=root.querySelector('#locPid');
-    const gpsBtn=root.querySelector('#useGPS');
-    const maps = await ensureGoogleMaps().catch(()=>null);
-    let map=null, marker=null, geocoder=null, autocomplete=null;
-    function updateLocation(lat,lng,address='',placeId=''){
-      if (!isFinite(lat)||!isFinite(lng)) return;
-      latEl.value=String(lat); lngEl.value=String(lng); if(address) addr.value=address; if(placeId) pidEl.value=placeId;
-      if (map&&marker){ const pos={lat:Number(lat),lng:Number(lng)}; marker.setPosition(pos); map.setCenter(pos); if(mapEl.style.display==='none'){mapEl.style.display='block';} map.setZoom(15); }
+      `);
     }
-    if (maps){
-      geocoder=new maps.Geocoder(); const centerSL={lat:8.465, lng:-11.779};
-      map=new maps.Map(mapEl,{center:centerSL,zoom:12}); marker=new maps.Marker({map,position:centerSL,draggable:true}); mapEl.style.display='block';
-      if (maps.places && input){
-        autocomplete = new maps.places.Autocomplete(input,{componentRestrictions:{country:['sl']}});
-        autocomplete.addListener('place_changed', ()=>{ const plc=autocomplete.getPlace(); const loc=plc?.geometry?.location; if(!loc) return; updateLocation(loc.lat(),loc.lng(), plc.formatted_address||plc.name||'', plc.place_id||''); });
-      }
-      marker.addListener('dragend', ()=>{ const pos=marker.getPosition(); const lat=pos.lat(),lng=pos.lng(); if(geocoder){ geocoder.geocode({location:{lat,lng}}, (res)=>{ const r0=res?.[0]; updateLocation(lat,lng, r0?.formatted_address||'', r0?.place_id||''); }); } else updateLocation(lat,lng); });
-    }
-    gpsBtn?.addEventListener('click', ()=>{
-      if(!('geolocation' in navigator)){ alert('Geolocation not supported'); return; }
-      gpsBtn.disabled=true; gpsBtn.textContent='Locating…';
-      navigator.geolocation.getCurrentPosition((pos)=>{
-        const lat=pos.coords.latitude,lng=pos.coords.longitude;
-        if(geocoder){ geocoder.geocode({location:{lat,lng}}, (res)=>{ const r0=res?.[0]; updateLocation(lat,lng, r0?.formatted_address||'', r0?.place_id||''); gpsBtn.disabled=false; gpsBtn.textContent='Use my current location'; }); }
-        else { updateLocation(lat,lng); gpsBtn.disabled=false; gpsBtn.textContent='Use my current location'; }
-      }, (err)=>{ alert('Could not get location: '+(err.message||err)); gpsBtn.disabled=false; gpsBtn.textContent='Use my current location'; }, {enableHighAccuracy:true,timeout:10000,maximumAge:0});
-    });
-  };
-  wrap.querySelectorAll('#postMap').forEach(()=> wireMaps(wrap));
-
-  // Services taxonomy, photos, availability
+  }
   if (category==='services'){
-    const SERVICES_TAXONOMY = {
-      "Home Services": ["Plumber","Electrician","Contractor","House Cleaning","Painting","Furniture Assembly","Interior Decoration","AC Specialist","TV Repairer","Appliance Repair","Pest Control"],
-      "Food & Events": ["Personal Chef","Catering","Baker","Event Planner","Decorator","DJ/MC","Photography","Videography"],
-      "Personal & Wellness": ["Hair Stylist","Makeup Artist","Massage","Fitness Trainer","Nail Technician","Tailor"],
-      "Tech & Office": ["Computer Repair","Phone Repair","IT Support","Graphic Design","Web Design","Printing"],
-      "Transport & Moving": ["Driver","Motorbike Delivery","Moving Help","Courier"],
-      "Lessons & Coaching": ["Tutoring","Language Lessons","Music Lessons","Career Coaching"],
-      "Other": ["General Labor","Errands","Carpentry","Masonry"]
-    };
-    const DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-    const pSel=wrap.querySelector('#svcParent'), cSel=wrap.querySelector('#svcChild');
-    pSel.innerHTML=`<option value="">— Select —</option>`+Object.keys(SERVICES_TAXONOMY).map(k=>`<option>${k}</option>`).join('');
-    cSel.innerHTML=`<option value="">— Select —</option>`;
-    pSel.addEventListener('change',()=>{ const kids=SERVICES_TAXONOMY[pSel.value]||[]; cSel.innerHTML=`<option value="">— Select —</option>`+kids.map(v=>`<option>${v}</option>`).join(''); });
-    const daysBox=wrap.querySelector('#daysBox'); DAYS.forEach(d=>{ const lab=document.createElement('label'); lab.style.display='inline-flex'; lab.style.alignItems='center'; lab.style.gap='6px'; const cb=document.createElement('input'); cb.type='checkbox'; cb.name='availability_days'; cb.value=d; lab.appendChild(cb); lab.appendChild(document.createTextNode(d)); daysBox.appendChild(lab); });
-    const profIn=wrap.querySelector('#profilePic'), profPrev=wrap.querySelector('#profilePrev'); const portIn=wrap.querySelector('#portfolio'), portStrip=wrap.querySelector('#portfolioStrip'); let profileFile=null; const portfolioFiles=[];
-    function drawPrev(){ profPrev.innerHTML=''; if(profileFile){ const ph=document.createElement('div'); ph.className='ph'; const img=document.createElement('img'); img.src=URL.createObjectURL(profileFile); ph.appendChild(img); profPrev.appendChild(ph); }
-      portStrip.innerHTML=''; portfolioFiles.slice(0,8).forEach((f,i)=>{ const ph=document.createElement('div'); ph.className='ph'; const img=document.createElement('img'); img.src=URL.createObjectURL(f); const x=document.createElement('button'); x.className='x'; x.type='button'; x.textContent='×'; x.onclick=()=>{ portfolioFiles.splice(i,1); drawPrev(); }; ph.appendChild(img); ph.appendChild(x); portStrip.appendChild(ph); }); }
-    profIn?.addEventListener('change', e=>{ const f=e.target.files?.[0]; if(f&&f.type.startsWith('image/')) profileFile=f; drawPrev(); });
-    portIn?.addEventListener('change', e=>{ for(const f of e.target.files||[]){ if(f.type.startsWith('image/')) portfolioFiles.push(f); } if(portfolioFiles.length>8) portfolioFiles.length=8; drawPrev(); });
-    form._collectServices = ()=>({ profile_photo_file:profileFile, portfolio_files:portfolioFiles.slice(0,8) });
+    f.insertAdjacentHTML('beforeend', `
+      <div class="row">
+        <div><label>Title <input name="title" required /></label></div>
+        <div><label>Min Price (¢) <input name="min_price_cents" type="number" min="0" /></label></div>
+      </div>
+      <label>Introduction<textarea name="intro" placeholder="Short intro…"></textarea></label>
+      <label>Services Description<textarea name="service_desc" placeholder="What you offer"></textarea></label>
+      <div class="row">
+        <div><label>Parent Category
+          <select name="service_parent">
+            <option>Personal Chef</option><option>Plumber</option><option>Contractor</option><option>Interior Decoration</option>
+            <option>AC Specialist</option><option>TV Repairer</option><option>Furniture Assembly</option><option>House Cleaning</option>
+            <option>Painting</option><option>Other</option>
+          </select></label></div>
+        <div><label>Sub-category <input name="service_child" placeholder="e.g., Deep cleaning, Wall painting"/></label></div>
+      </div>
+      <div class="row">
+        <div><label>Pricing model <input name="price_model" placeholder="Fixed / Hourly"/></label></div>
+        <div><label>Service radius (km) <input name="service_radius_km" type="number" min="0"/></label></div>
+      </div>
+      <div class="row">
+        <div><label>Availability
+          <select name="availability_days" multiple>
+            <option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option><option>Fri</option><option>Sat</option><option>Sun</option>
+          </select></label></div>
+        <div><label>Profile Photo <input type="file" name="profile_photo" accept="image/*"/></label></div>
+        <div><label>Portfolio (up to 8) <input type="file" name="portfolio" accept="image/*" multiple/></label></div>
+      </div>
+    `);
   }
-
-  // Rentals taxonomy + dynamic
   if (category==='rentals'){
-    const RENTAL_TAXONOMY = {
-      "Homes": ["Apartment","House","Townhouse","Room in Shared Home","Guesthouse","Bungalow","Duplex"],
-      "Land": ["Residential Land","Commercial Land","Farm Land"],
-      "Commercial": ["Shop/Store","Office","Warehouse","Restaurant/Bar Space","Event Space"]
-    };
-    const AMENITIES = ["Air Conditioning","Balcony","Built-in Wardrobes","Ceiling Fans","Security","Generator","Water Tank","Back-up Water","Gated Compound","Garden","Laundry","Swimming Pool","Sea View"];
-    const UTILITIES = ["Water","Electricity","Internet","Gas","Trash"];
-    const pSel=wrap.querySelector('#rentParent'), cSel=wrap.querySelector('#rentChild');
-    pSel.innerHTML = `<option value="">— Select —</option>` + Object.keys(RENTAL_TAXONOMY).map(k=>`<option>${k}</option>`).join('');
-    cSel.innerHTML = `<option value="">— Select —</option>`;
-    pSel.addEventListener('change', ()=>{ const kids=RENTAL_TAXONOMY[pSel.value]||[]; cSel.innerHTML = `<option value="">— Select —</option>` + kids.map(v=>`<option>${v}</option>`).join(''); });
-    const amenBox=wrap.querySelector('#amenitiesBox'), utilBox=wrap.querySelector('#utilitiesBox');
-    AMENITIES.forEach(a=>{ const lab=document.createElement('label'); lab.style.display='inline-flex'; lab.style.alignItems='center'; lab.style.gap='6px'; const cb=document.createElement('input'); cb.type='checkbox'; cb.name='amenities'; cb.value=a; lab.appendChild(cb); lab.appendChild(document.createTextNode(a)); amenBox.appendChild(lab); });
-    UTILITIES.forEach(u=>{ const lab=document.createElement('label'); lab.style.display='inline-flex'; lab.style.alignItems='center'; lab.style.gap='6px'; const cb=document.createElement('input'); cb.type='checkbox'; cb.name='utilities'; cb.value=u; lab.appendChild(cb); lab.appendChild(document.createTextNode(u)); utilBox.appendChild(lab); });
-    const priceInput = form.querySelector('input[name="price_cents"]'); const listingType = wrap.querySelector('#listingType'); const leaseWrap = wrap.querySelector('#leaseTermWrap');
-    function refreshListingType(){ const isRent = (listingType.value==='rent'); priceInput?.setAttribute('placeholder', isRent ? 'e.g., 150000 (per month)' : 'e.g., 25000000'); leaseWrap.style.display = isRent ? '' : 'none'; }
-    listingType.addEventListener('change', refreshListingType); refreshListingType();
-
-    const phInCam = wrap.querySelector('#rentCam'), phInGal=wrap.querySelector('#rentGal'), strip=wrap.querySelector('#rentStrip'); const files=[];
-    function drawRentPreviews(){ strip.innerHTML=''; files.slice(0,8).forEach((f,i)=>{ const ph=document.createElement('div'); ph.className='ph'; const img=document.createElement('img'); img.src=URL.createObjectURL(f); const x=document.createElement('button'); x.className='x'; x.type='button'; x.textContent='×'; x.onclick=()=>{ files.splice(i,1); drawRentPreviews(); }; ph.appendChild(img); ph.appendChild(x); strip.appendChild(ph); }); }
-    phInCam?.addEventListener('change', e=>{ const f=e.target.files?.[0]; if(f&&f.type.startsWith('image/')) files.unshift(f); if(files.length>8) files.length=8; drawRentPreviews(); });
-    phInGal?.addEventListener('change', e=>{ for(const f of e.target.files||[]){ if(f.type.startsWith('image/')) files.push(f); } if(files.length>8) files.length=8; drawRentPreviews(); });
-    form._collectRentals = ()=>({ rental_photo_files: files.slice(0,8) });
+    f.insertAdjacentHTML('beforeend', `
+      <div class="row">
+        <div><label>Title <input name="title" required /></label></div>
+        <div><label>Price (¢) <input name="price_cents" type="number" min="0" /></label></div>
+      </div>
+      <label>Description<textarea name="description"></textarea></label>
+      <div class="row">
+        <div><label>Listing Type
+          <select name="listing_type"><option value="rent">Rent</option><option value="sell">Sell</option></select></label></div>
+        <div><label>Home Details (Parent)
+          <select name="property_parent">
+            <option>House</option><option>Apartment</option><option>Townhouse</option><option>Duplex</option><option>Land</option><option>Commercial</option>
+          </select></label></div>
+        <div><label>Sub Type (Child) <input name="property_child" placeholder="1-bed, Studio, Shop…"/></label></div>
+      </div>
+      <div class="row">
+        <div><label>Bedrooms <input name="bedrooms" type="number" min="0" placeholder="0=Studio"/></label></div>
+        <div><label>Bathrooms <input name="bathrooms" type="number" min="0"/></label></div>
+        <div><label>Furnished
+          <select name="furnished"><option value="">—</option><option value="yes">Yes</option><option value="partly">Partly</option><option value="no">No</option></select></label></div>
+      </div>
+      <div class="row">
+        <div><label>Size (m²) <input name="size_sqm" type="number" min="0"/></label></div>
+        <div><label>Lease Term <input name="lease_term" placeholder="12 months"/></label></div>
+        <div><label>Available From <input name="available_from" placeholder="YYYY-MM-DD"/></label></div>
+      </div>
+      <div class="row">
+        <div><label>Deposit (¢) <input name="deposit_cents" type="number" min="0"/></label></div>
+        <div><label>Pets Allowed <select name="pets_allowed"><option value="">—</option><option>Yes</option><option>No</option></select></label></div>
+        <div><label>Parking Spots <input name="parking_spots" type="number" min="0"/></label></div>
+      </div>
+      <div class="row">
+        <div><label>Amenities (multi) <select name="amenities" multiple><option>Water</option><option>Electricity</option><option>Backup Power</option><option>Security</option></select></label></div>
+        <div><label>Utilities (multi) <select name="utilities" multiple><option>Included</option><option>Not included</option></select></label></div>
+      </div>
+    `);
   }
 
-  // Goods photos + preload
-  if (category === 'goods'){
-    const cam = wrap.querySelector('#goodsCam'); const gal=wrap.querySelector('#goodsGal'); const strip=wrap.querySelector('#goodsStrip'); const files=[];
-    function drawPrev(){ strip.innerHTML=''; files.slice(0,8).forEach((f,i)=>{ const ph=document.createElement('div'); ph.className='ph'; const img=document.createElement('img'); img.src=URL.createObjectURL(f); const x=document.createElement('button'); x.className='x'; x.type='button'; x.textContent='×'; x.onclick=()=>{ files.splice(i,1); drawPrev(); }; ph.appendChild(img); ph.appendChild(x); strip.appendChild(ph); }); }
-    cam?.addEventListener('change', e=>{ const f=e.target.files?.[0]; if(f&&f.type.startsWith('image/')) files.unshift(f); if(files.length>8) files.length=8; drawPrev(); });
-    gal?.addEventListener('change', e=>{ for(const f of e.target.files||[]){ if(f.type.startsWith('image/')) files.push(f); } if(files.length>8) files.length=8; drawPrev(); });
-    if (Array.isArray(window._preUploadPhotos) && window._preUploadPhotos.length){ files.splice(0,0, ...window._preUploadPhotos.slice(0,8)); window._preUploadPhotos=[]; drawPrev(); }
-    form._collectGoods = ()=>({ goods_photo_files: files.slice(0,8) });
+  // Google location
+  f.insertAdjacentHTML('beforeend', googleLocationBlock());
+
+  // Boost
+  if (allowBoost){
+    f.insertAdjacentHTML('beforeend', boostBlock({category, mandatory: boostMandatory}));
   }
 
-  // Boost UI reacts
-  const bm = wrap.querySelector('#boostMonths');
-  const teaser = wrap.querySelector('#premiumTeaser');
-  const priceLine = wrap.querySelector('#boostPriceLine');
-  const trialChk = wrap.querySelector('#boostTrial');
-  const payBlock = wrap.querySelector('#mmPayBlock');
-  const payInput = wrap.querySelector('#paymentScreenshot');
-  const isAds = category === 'ads';
-  if (bm && teaser && priceLine){
-    const PRICE_PER_MONTH = 100; // NLe
-    const refresh = ()=>{
-      let m = Math.max(isAds?1:0, Math.min(12, Number(bm.value || 0)));
-      if (isAds && m < 1){ m = 1; bm.value = 1; }
-      const trial = !!(trialChk && trialChk.checked && !isAds);
-      const total = trial && m===0 ? 0 : (PRICE_PER_MONTH * m);
-      teaser.style.opacity = (trial || m > 0) ? '1' : '0.55';
-      priceLine.innerHTML = trial && m===0
-        ? `NLe 100 per month · Est. total: <strong>NLe 0</strong> <small class="muted">(14-day trial)</small>`
-        : trial && m>0
-          ? `NLe 100 per month · Est. total: <strong>NLe ${total}</strong> <small class="muted">(first 14 days free)</small>`
-          : `NLe 100 per month · Est. total: <strong>NLe ${total}</strong>`;
-      const requirePay = isAds || m > 0;
-      if (payBlock) payBlock.style.display = requirePay ? 'block' : 'none';
-      if (payInput){ if (requirePay) payInput.setAttribute('required','required'); else payInput.removeAttribute('required'); }
-    };
-    bm.addEventListener('input', refresh);
-    trialChk && trialChk.addEventListener('change', refresh);
-    refresh();
-  }
+  // Submit
+  const submitBar = document.createElement('div'); submitBar.className='actions'; submitBar.style.marginTop='10px';
+  submitBar.innerHTML = `<button class="btn" type="submit">Publish</button>`;
+  f.appendChild(submitBar);
 
-  // Submit (auto-publish if Boost untouched)
-  form.addEventListener('submit', async (e)=>{
-    e.preventDefault();
-    const fd=new FormData(form);
-    fd.set('category', category);
-
-    // Normalize boost
-    const bmEl = form.querySelector('#boostMonths');
-    if (bmEl) {
-      const m = Math.max(0, Math.min(12, parseInt(bmEl.value || '0', 10) || 0));
-      fd.set('boosted_months', String(m));
+  // Wire photos chooser (store as simple text names)
+  const gal = $('#postGal', wrap), cam = $('#postCam', wrap);
+  const pushThumbs = (files)=>{
+    for (const f of files||[]){
+      if (!f || !f.type || !f.type.startsWith('image/')) continue;
+      addPhotoThumb(f);
     }
-    const trialEl = form.querySelector('#boostTrial');
-    if (!trialEl || !trialEl.checked) fd.delete('boost_trial');
+  };
+  if (gal) gal.addEventListener('change', ()=> pushThumbs(gal.files));
+  if (cam) cam.addEventListener('change', ()=> pushThumbs(cam.files));
 
-    if (form._collectGoods){ const gg=form._collectGoods(); (gg.goods_photo_files||[]).forEach(f=> fd.append('photos', f)); }
-    if (form._collectRentals){ const rr=form._collectRentals(); (rr.rental_photo_files||[]).forEach(f=> fd.append('photos', f)); }
-    if (form._collectServices){ const ss=form._collectServices(); (ss.portfolio_files||[]).forEach(f=> fd.append('portfolio', f)); if(ss.profile_photo_file) fd.append('profile_photo', ss.profile_photo_file); }
+  // Google maps autocomplete
+  (async()=>{
+    const g = await ensureGoogleMaps(); if(!g) return;
+    const input = $('#placeInput', wrap); const mapDiv=$('#postMap', wrap);
+    const map = new g.Map(mapDiv, {center:{lat:8.4606,lng:-11.7799}, zoom:7}); // Sierra Leone approx
+    const autocomplete = new g.places.Autocomplete(input, { fields: ['formatted_address','geometry','place_id'] });
+    autocomplete.addListener('place_changed', ()=>{
+      const place = autocomplete.getPlace(); if(!place || !place.geometry) return;
+      $('#locAddress',wrap).value = place.formatted_address || '';
+      $('#locLat',wrap).value = place.geometry.location.lat();
+      $('#locLng',wrap).value = place.geometry.location.lng();
+      $('#locPid',wrap).value = place.place_id || '';
+      mapDiv.style.display='block';
+      map.setCenter(place.geometry.location); map.setZoom(14);
+      new g.Marker({map, position: place.geometry.location});
+    });
+    $('#useGPS',wrap).onclick = ()=>{
+      if (!navigator.geolocation){ alert('Geolocation not supported'); return; }
+      navigator.geolocation.getCurrentPosition(pos=>{
+        const {latitude:lat, longitude:lng} = pos.coords||{};
+        $('#locLat',wrap).value=lat; $('#locLng',wrap).value=lng; $('#locAddress',wrap).value='My location (approx)';
+        mapDiv.style.display='block'; const ll={lat,lng}; map.setCenter(ll); map.setZoom(14); new g.Marker({map, position: ll});
+      }, ()=> alert('Could not get your location'));
+    };
+  })();
 
-    const res = await API.postForm('/api/posts', fd);
-    if(res.error){ alert(res.error); return; }
-    alert('Post created!');
+  // Boost dynamic parts
+  const mline = ()=>{
+    const months = Number($('#boostMonths',wrap)?.value||0);
+    $('#boostPriceLine',wrap).innerHTML = `NLe 100 per month · Est. total: <strong>NLe ${months*100}</strong>`;
+    const trial = !!$('#boostTrial',wrap)?.checked;
+    $('#mmPayBlock',wrap).style.display = (months>0) ? 'block' : (trial ? 'none' : 'none');
+  };
+  $('#boostMonths',wrap)?.addEventListener('input', mline);
+  $('#boostTrial',wrap)?.addEventListener('change', mline);
+  mline();
+
+  // Submit handler
+  f.addEventListener('submit', async(e)=>{
+    e.preventDefault();
+    const me=API._requireUser(); if(!me){ alert('Please log in first.'); return; }
+    const fd = new FormData(f);
+    fd.append('category', category);
+
+    // Add photos names from thumbs
+    const names=[];
+    $$('#postStrip .ph img', wrap).forEach(img=>{
+      const url=img.src; const name = (url.split('/').pop()||'photo').slice(0,64);
+      names.push(name);
+    });
+    if (names.length) fd.append('photos', new Blob([]), names.join(',')); // placeholder (names processed by postForm)
+
+    // Boost screenshot name (if file chosen)
+    const pay = $('#paymentScreenshot',wrap);
+    if (pay && pay.files && pay.files[0]){
+      fd.append('payment_screenshot', pay.files[0]);
+    }
+
+    const r = await API.postForm('/api/posts', fd);
+    if (r.error){ alert(r.error); return; }
+    alert('Published!');
     location.hash = `#/${category}`;
   });
 
-  app.innerHTML=''; app.appendChild(wrap);
+  return wrap;
 }
 
 /* ---------- Admin ---------- */
 async function viewAdmin(){
-  const me=API._requireUser(); if(!me||!isMainAdmin(me)){ app.innerHTML='<p>Admins only.</p>'; return; }
-  app.innerHTML = `<section>
-    <h2>${titled('admin','Admin · Limited Admin Requests')}</h2>
-    <div class="card" id="laWrap"></div>
-    <div class="card" style="margin-top:10px"><h3 style="margin:0 0 8px 0;">Settings</h3><p class="muted">Allow-list emails are set in env.json (ADMIN_EMAILS). Approve Limited Admin requests here.</p></div>
+  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
+  if (!isMainAdmin(me)) { app.innerHTML='<p>Admins only.</p>'; return; }
+  const d=DB.data;
+  const pending = d.users.filter(u=>u.limitedAdminStatus==='pending');
+  const allBloggers = d.bloggers||[];
+  app.innerHTML = `<section><h2>${titled('admin','Admin')}</h2>
+    <div class="card">
+      <h3>Limited Admin Requests</h3>
+      <div id="laList">${pending.length?'':'<p class="muted">No pending requests.</p>'}</div>
+    </div>
+    <div class="card" style="margin-top:10px">
+      <h3>Bloggers</h3>
+      <div id="blogList">${allBloggers.length?'' : '<p class="muted">No blogger submissions yet.</p>'}</div>
+    </div>
   </section>`;
-  const d=DB.data; const list=d.users.filter(u=>u.limitedAdminStatus==='pending').map(u=>`<li>${u.email} <button data-id="${u.id}">Approve</button></li>`).join('');
-  $('#laWrap').innerHTML = `<h3 style="margin:0 0 8px 0;">Pending Limited Admin</h3><ul>${list||'<li class="muted">None</li>'}</ul>`;
-  $('#laWrap').querySelectorAll('button').forEach(b=>{
-    b.onclick=()=>{ const u=d.users.find(x=>x.id===b.dataset.id); if(!u) return; u.limitedAdminStatus='approved'; DB.data=d; alert('Approved'); route(); };
+
+  const la=$('#laList');
+  pending.forEach(u=>{
+    const row=document.createElement('div'); row.style='display:flex;gap:8px;align-items:center;margin:6px 0';
+    row.innerHTML = `<span>${u.email}</span> <button class="btn approve">Approve</button> <button class="btn reject" style="background:#eee;border-color:#ddd">Reject</button>`;
+    row.querySelector('.approve').onclick = ()=>{ u.limitedAdminStatus='approved'; DB.data=DB.data; alert('Approved'); route(); };
+    row.querySelector('.reject').onclick = ()=>{ u.limitedAdminStatus='none'; DB.data=DB.data; alert('Rejected'); route(); };
+    la.appendChild(row);
+  });
+
+  const bl=$('#blogList');
+  allBloggers.forEach(b=>{
+    const u=getUserById(b.userId)||{};
+    const row=document.createElement('div'); row.style='display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap';
+    row.innerHTML = `<strong>${b.platform||'—'}</strong> ${b.handle||''} — ${b.followers||0} followers — ${cents(b.price_cents||0)} · ${b.status} · by ${u.email||''}
+      <div class="actions">
+        <button class="btn ap">Approve</button>
+        <button class="btn rej" style="background:#eee;border-color:#ddd">Reject</button>
+      </div>`;
+    row.querySelector('.ap').onclick = async()=>{ const r=await API.post('/api/admin/bloggers/update',{bloggerId:b.id,action:'approved'}); if(r.error){alert(r.error);return;} alert('Approved'); route(); };
+    row.querySelector('.rej').onclick = async()=>{ const r=await API.post('/api/admin/bloggers/update',{bloggerId:b.id,action:'rejected'}); if(r.error){alert(r.error);return;} alert('Rejected'); route(); };
+    bl.appendChild(row);
   });
 }
 async function viewAdminQuotes(){
-  const me=API._requireUser(); if(!me || !isAdminOrLimited(me)){ app.innerHTML='<p>Staff only.</p>'; return; }
-  app.innerHTML = `<section><h2>${titled('admin','Quotes (Service Requests)')}</h2><div id="quotesWrap"></div></section>`;
-  const res=await API.post('/api/admin/quotes/list',{}); if(res.error){ $('#quotesWrap').innerHTML=`<p>${res.error}</p>`; return; }
-  const rows=(res.quotes||[]).map(q=>`
-    <tr data-id="${q.id}">
-      <td>${q.postTitle||'(service)'}</td>
-      <td>${q.requesterEmail||''} → <small class="muted">${q.providerEmail||''}</small></td>
-      <td>${q.details||''}</td>
-      <td><span class="badge">${q.status}</span></td>
-      <td><button class="inprog">In Progress</button><button class="closed">Close</button><button class="rejected">Reject</button><button class="msg-buyer">Msg Buyer</button><button class="msg-provider">Msg Provider</button></td>
-    </tr>`).join('');
-  $('#quotesWrap').innerHTML = `<table class="table"><thead><tr><th>Service</th><th>Buyer → Provider</th><th>Details</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows||''}</tbody></table>${!rows?'<p class="muted">No quotes yet.</p>':''}`;
-  $('#quotesWrap').querySelectorAll('tr').forEach(tr=>{
-    const id=tr.dataset.id; const doUpd=async(act)=>{ const r=await API.post('/api/admin/quotes/update',{quoteId:id, action:act}); if(r.error){alert(r.error);} route('#/admin/quotes'); };
-    tr.querySelector('.inprog').onclick =()=>doUpd('in_progress');
-    tr.querySelector('.closed').onclick =()=>doUpd('closed');
-    tr.querySelector('.rejected').onclick=()=>doUpd('rejected');
-    tr.querySelector('.msg-buyer').onclick=async()=>{ const q=DB.data.quoteRequests.find(x=>x.id===id); if(!q){alert('Missing');return;} const r=await API.post('/api/messages/start-with-user',{userId:q.requesterId}); if(r.error){alert(r.error);return;} location.hash=`#/chat/${r.threadId}`; };
-    tr.querySelector('.msg-provider').onclick=async()=>{ const q=DB.data.quoteRequests.find(x=>x.id===id); if(!q){alert('Missing');return;} const r=await API.post('/api/messages/start-with-user',{userId:q.providerId}); if(r.error){alert(r.error);return;} location.hash=`#/chat/${r.threadId}`; };
+  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
+  if(!isAdminOrLimited(me)) { app.innerHTML='<p>Staff only.</p>'; return; }
+  const r=await API.post('/api/admin/quotes/list',{}); if(r.error){ app.innerHTML='<p>'+r.error+'</p>'; return; }
+  app.innerHTML = `<section><h2>${titled('admin','Quotes')}</h2><div id="qwrap" class="grid"></div></section>`;
+  const wrap=$('#qwrap');
+  (r.quotes||[]).forEach(q=>{
+    const div=document.createElement('div'); div.className='card';
+    div.innerHTML = `<h3>${q.postTitle||'Service'}</h3>
+      <p class="muted">From: ${q.requesterEmail||''} → Provider: ${q.providerEmail||''}</p>
+      <p>${q.details||''}</p>
+      <p class="muted">Status: ${q.status}</p>
+      <div class="actions">
+        <button class="btn act" data-a="in_progress">In progress</button>
+        <button class="btn act" data-a="closed">Closed</button>
+        <button class="btn act" data-a="rejected" style="background:#eee;border-color:#ddd">Reject</button>
+      </div>`;
+    div.querySelectorAll('.act').forEach(b=> b.onclick = async()=>{
+      const a=b.dataset.a; const rr=await API.post('/api/admin/quotes/update',{quoteId:q.id,action:a}); if(rr.error){alert(rr.error);return;} alert('Updated'); route();
+    });
+    wrap.appendChild(div);
   });
 }
-
-// Admin → App Ads (admin-only; select recipients)
 async function viewAdminAppAds(){
-  const me = API._requireUser(); 
-  if (!me || !isMainAdmin(me)){ app.innerHTML = '<p>Admins only.</p>'; return; }
-
-  const users = DB.data.users.slice().sort((a,b)=>(a.email||'').localeCompare(b.email||''));
-
-  app.innerHTML = `<section>
-    <h2>${titled('admin','Admin · App Advertisements')}</h2>
-    <div class="card" id="adForm">
-      <h3 style="margin:0 0 8px 0;">Compose Broadcast</h3>
-      <form id="bf">
-        <div class="row">
-          <div><label>Title <input name="title" required placeholder="Promo, update, reminder…"/></label></div>
-          <div><label>CTA Label <input name="cta_label" placeholder="Shop Now"/></label></div>
-          <div><label>CTA URL <input name="cta_url" placeholder="https://…"/></label></div>
-        </div>
-        <label>Message <textarea name="message" required placeholder="Write your announcement to users…"></textarea></label>
-        <div class="row">
-          <div><label>Image (optional) <input type="file" id="adImg" name="adImg" accept="image/*"/></label></div>
-          <div><label>Audience
-            <select name="audience" id="aud">
-              <option value="all">All users</option>
-              <option value="boosted">Boosted only</option>
-              <option value="trial">Trial only</option>
-              <option value="cat:goods">Users who posted Goods</option>
-              <option value="cat:services">Users who posted Services</option>
-              <option value="cat:rentals">Users who posted Rentals</option>
-              <option value="cat:jobs">Users who posted Jobs</option>
-              <option value="cat:ads">Users who posted Ads</option>
-              <option value="selected">Selected users (below)</option>
-            </select>
-          </label></div>
-        </div>
-
-        <div class="row">
-          <div>
-            <label>Selected Users (hold Ctrl/Cmd to pick multiple)
-              <select id="userPick" multiple size="6" style="width:100%">
-                ${users.map(u=>`<option value="${u.email}">${u.email}</option>`).join('')}
-              </select>
-            </label>
-            <small class="muted">If “Selected users” is chosen above, only those you pick here will receive the ad.</small>
-          </div>
-        </div>
-
-        <div class="actions" style="margin-top:8px">
-          <button type="submit" class="btn">Send Broadcast</button>
-        </div>
-      </form>
-    </div>
-    <div class="card" style="margin-top:10px">
-      <h3 style="margin:0 0 8px 0;">Previous Broadcasts</h3>
-      <div id="adList" class="muted">Loading…</div>
-    </div>
+  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
+  if(!isMainAdmin(me)) { app.innerHTML='<p>Admins only.</p>'; return; }
+  app.innerHTML = `<section><h2>${titled('admin','App Advertisements')}</h2>
+    <div class="card"><form id="adf">
+      <div class="row">
+        <div><label>Title <input name="title" required/></label></div>
+        <div><label>CTA Label <input name="cta_label" placeholder="Open"/></label></div>
+        <div><label>CTA URL <input name="cta_url" placeholder="https://…"/></label></div>
+      </div>
+      <label>Message<textarea name="message" required></textarea></label>
+      <div class="row">
+        <div><label>Audience
+          <select name="audience">
+            <option value="all">All users</option>
+            <option value="boosted">Boosted users</option>
+            <option value="trial">Users on trial</option>
+            <option value="cat:goods">Users who posted Goods</option>
+            <option value="cat:services">Users who posted Services</option>
+            <option value="cat:rentals">Users who posted Rentals</option>
+            <option value="selected">Selected emails</option>
+          </select>
+        </label></div>
+        <div><label>Target Emails (JSON array or comma list) <input name="target_emails" placeholder='["a@b.com","c@d.com"] or a@b.com,c@d.com'/></label></div>
+      </div>
+      <div class="actions"><button class="btn" type="submit">Send</button></div>
+    </form></div>
   </section>`;
-
-  $('#bf').addEventListener('submit', async (e)=>{
+  $('#adf').addEventListener('submit', async(e)=>{
     e.preventDefault();
-    const fd=new FormData(e.target);
-    if (fd.get('audience') === 'selected'){
-      const picks = Array.from($('#userPick').selectedOptions).map(o=>o.value);
-      fd.set('target_emails', JSON.stringify(picks));
-    }
-    const res=await API.postForm('/api/admin/broadcast/create', fd);
-    if(res.error){ alert(res.error); return; }
-    alert(`Broadcast sent! (${res.sent||0} recipients)`);
-    route('#/admin/app-ads');
+    const fd=new FormData(e.target); const obj=Object.fromEntries(fd.entries());
+    const r=await API.post('/api/admin/broadcast/create', obj);
+    if (r.error){ alert(r.error); return; }
+    alert(`Sent to ${r.sent} user(s).`); location.hash='#/inbox';
   });
-
-  const d=DB.data;
-  const items=(d.appAds||[]).slice().sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
-  if (!items.length){ $('#adList').textContent='No broadcasts yet.'; }
-  else {
-    $('#adList').innerHTML = items.map(x=>{
-      const when = new Date(x.createdAt).toLocaleString();
-      return `<div style="margin:8px 0">
-        <strong>${x.title}</strong> <small class="muted">(${when})</small><br/>
-        <span>${x.message}</span>
-        ${x.cta_label && x.cta_url ? `<div style="margin-top:4px"><a class="btn" href="${x.cta_url}" target="_blank" rel="noopener">${x.cta_label}</a></div>`:''}
-        ${x.image_name ? `<div class="muted" style="margin-top:4px">Image: ${x.image_name}</div>`:''}
-        <div class="muted" style="margin-top:4px">Audience: ${x.audience}</div>
-      </div>`;
-    }).join('');
-  }
 }
 
 /* ---------- Router ---------- */
@@ -1520,9 +1497,12 @@ async function route(){
   sweepTrials();
   playBoopOnNew();
 
+  const isHome = (!hash || seg[0]==='');  // Home = Goods feed only
+  setHeroVisible(isHome);
+
   if (!hash || seg[0]==='') return viewHome();
 
-  if (seg[0]==='goods')      return viewCategory('goods');
+  if (seg[0]==='goods')      return viewCategory('goods');   // hero hidden here
   if (seg[0]==='services')   return viewCategory('services');
   if (seg[0]==='rentals')    return viewCategory('rentals');
   if (seg[0]==='jobs')       return viewCategory('jobs');
@@ -1534,13 +1514,12 @@ async function route(){
 
   if (seg[0]==='post' && seg[1]){
     const allowBoost = ['goods','services','rentals','ads','jobs'].includes(seg[1]);
-    const boostMandatory = (seg[1] === 'ads'); // only Ads requires boost
+    const boostMandatory = (seg[1] === 'ads');
     app.innerHTML=''; app.appendChild(postForm({ category: seg[1], allowBoost, boostMandatory }));
     return;
   }
 
   if (seg[0]==='item' && seg[1]) return viewItem(seg[1]);
-
   if (seg[0]==='search')     return viewSearch();
   if (seg[0]==='inbox')      return viewInbox();
   if (seg[0]==='chat' && seg[1]) return viewChat(seg[1]);
@@ -1553,4 +1532,3 @@ async function route(){
 
   return viewHome();
 }
-

@@ -6,12 +6,15 @@
   <title>Sleconomicmarket</title>
   <meta name="description" content="Local marketplace for Sierra Leone — goods, services, rentals, jobs, and blogger ads." />
 
-  <!-- Favicons / logo (optional; drop your own files in repo root) -->
+  <!-- Favicons (optional) -->
   <link rel="icon" type="image/png" sizes="32x32" href="./sleco-slmap-favicon-32.png">
   <link rel="icon" type="image/png" sizes="48x48" href="./sleco-slmap-favicon-48.png">
   <link rel="icon" type="image/png" sizes="192x192" href="./sleco-slmap-favicon-192.png">
   <link rel="icon" type="image/png" sizes="512x512" href="./sleco-slmap-favicon-512.png">
   <link rel="apple-touch-icon" href="./apple-touch-icon-slmap.png">
+
+  <!-- Google Identity Services (for Google Sign-In on phones) -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 
   <style>
     :root{
@@ -21,13 +24,26 @@
     }
     *{box-sizing:border-box} html,body{height:100%}
     body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;background:var(--bg);color:var(--fg)}
-    header,footer{background:linear-gradient(180deg,#fff8ec,#fff3db);border-bottom:1px solid var(--border)}
-    header{position:sticky;top:0;z-index:10}
-    nav{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:10px 12px}
-    nav a{color:var(--fg);text-decoration:none;padding:6px 10px;border-radius:10px}
-    nav a:hover{background:#fff6e7}
-    .spacer{flex:1}
-    #authArea button{margin-left:6px}
+
+    header{position:sticky;top:0;z-index:10;background:linear-gradient(180deg,#fff8ec,#fff3db);border-bottom:1px solid var(--border)}
+    /* Top search row (big) */
+    .topbar{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;max-width:980px;margin:0 auto;padding:8px 12px;border-bottom:1px solid var(--border)}
+    .topbar input{width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:#fff;font-size:16px}
+    .topbar .locbtn{padding:12px 14px;border-radius:12px;background:linear-gradient(180deg,var(--gold-400),var(--gold-600));border:1px solid var(--gold-500);color:#23180f;font-weight:700}
+
+    /* Category row (boxes with icons + bold) */
+    .cats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;max-width:980px;margin:0 auto;padding:8px 12px}
+    .catbtn{
+      display:flex;gap:8px;align-items:center;justify-content:center;padding:8px;border:1px solid var(--border);
+      border-radius:12px;background:#fff;text-decoration:none;color:var(--fg);font-weight:800
+    }
+    .catbtn:hover{background:#fff7e6}
+    .catbtn svg{width:16px;height:16px;flex:0 0 16px}
+
+    /* Auth area (right side) */
+    nav{display:flex;gap:10px;flex-wrap:wrap;align-items:center;max-width:980px;margin:0 auto;padding:8px 12px}
+    nav .spacer{flex:1}
+
     main{max-width:980px;margin:16px auto;padding:0 12px 88px}
     h2{margin:8px 0 12px}
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
@@ -43,55 +59,88 @@
     .btn{display:inline-block;padding:10px 14px;border-radius:12px;background:linear-gradient(180deg,var(--gold-400),var(--gold-600));border:1px solid var(--gold-500);color:#23180f;font-weight:600;text-decoration:none}
     table{width:100%;border-collapse:collapse}
     th,td{padding:8px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
-    footer{position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--border)}
-    .foot{max-width:980px;margin:0 auto;padding:8px 12px;display:flex;gap:10px;align-items:center;justify-content:space-between}
-    .foot .btnbar{display:flex;gap:8px}
-    .pill{padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:#fff}
+
+    /* Tiny back button */
+    #backBtn{position:sticky;top:4px;left:4px;z-index:9;margin:4px 0 6px 0;padding:4px 8px;border-radius:999px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:12px}
+
+    /* Footer — tiny for mobile fit */
+    footer{position:fixed;left:0;right:0;bottom:0;border-top:1px solid var(--border);background:linear-gradient(180deg,#fff8ec,#fff3db)}
+    .foot{max-width:980px;margin:0 auto;padding:6px 8px;display:flex;gap:6px;align-items:center;justify-content:space-between}
+    .foot .btnbar{display:flex;gap:6px}
+    .pill{padding:4px 8px;border:1px solid var(--border);border-radius:999px;background:#fff;font-size:11px}
+    .btn{padding:8px 10px;font-size:12px;border-radius:10px}
+
     .photos{display:flex;gap:8px;flex-wrap:wrap}
-    .photos .ph{position:relative;width:76px;height:76px;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+    .photos .ph{position:relative;width:72px;height:72px;border:1px solid var(--border);border-radius:10px;overflow:hidden}
     .photos .ph img{width:100%;height:100%;object-fit:cover}
     .photos .ph .x{position:absolute;top:2px;right:4px;border:none;background:#0008;color:#fff;border-radius:6px;padding:0 6px;line-height:20px;cursor:pointer}
 
-    /* Tiny hero (Home only) */
-    .hero { position: relative; overflow: hidden; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+    /* Tiny hero (Home only — even smaller now) */
+    .hero { display:none; position: relative; overflow: hidden; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
             background: linear-gradient(180deg,#fff8ec,#fff3db); }
-    .hero-inner { max-width: 980px; margin: 0 auto; padding: 6px 12px 8px; }
-    .hero-box { position: relative; height: 88px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    .hero-inner { max-width: 980px; margin: 0 auto; padding: 4px 12px 6px; }
+    .hero-box { position: relative; height: 56px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
                 box-shadow: 0 6px 16px rgba(212,160,23,.10); }
-    .hero-slide { position:absolute; inset:0; display:grid; grid-template-columns:88px 1fr; align-items:center; gap:8px; padding:8px;
-                  opacity:0; pointer-events:none; transition:opacity .4s ease; }
+    .hero-slide { position:absolute; inset:0; display:grid; grid-template-columns:56px 1fr; align-items:center; gap:6px; padding:6px;
+                  opacity:0; pointer-events:none; transition:opacity .4s ease; font-size:12px }
     .hero-slide.active{ opacity:1; pointer-events:auto; }
-    .hero-art{ display:flex; align-items:center; justify-content:center; width:100%; height:100%; }
     .hero-art a{ display:block; width:100%; height:100%; cursor:pointer; text-decoration:none; }
-    .hero-copy h3{ margin:0 0 2px 0; font-size:14px }
-    .hero-copy p{ margin:0; color:var(--muted); font-size:12px }
-    .hero-cta.btn{ padding:6px 10px; font-size:12px; border-radius:10px }
+    .hero-copy h3{ margin:0 0 2px 0; font-size:12px }
+    .hero-copy p{ margin:0; color:var(--muted); font-size:11px }
+    .hero-cta.btn{ padding:4px 8px; font-size:11px; border-radius:8px }
     .floaty { animation: floaty 4s ease-in-out infinite; }
-    @keyframes floaty { 0%{transform:translateY(0)} 50%{transform:translateY(-4px)} 100%{transform:translateY(0)} }
-    @media (max-width:720px){ .hero-slide{ grid-template-columns:1fr; padding:8px } .hero-box{ height:120px } }
+    @keyframes floaty { 0%{transform:translateY(0)} 50%{transform:translateY(-3px)} 100%{transform:translateY(0)} }
+
+    @media (max-width:720px){
+      .cats{grid-template-columns:repeat(3,1fr)}
+      .topbar{grid-template-columns:1fr;gap:6px}
+    }
   </style>
 </head>
 <body>
   <header>
+    <!-- Big search row -->
+    <div class="topbar">
+      <input id="globalSearch" placeholder="Search goods, services, rentals, jobs…" />
+      <button class="locbtn" id="goLocation">My Location</button>
+    </div>
+
+    <!-- Category row (no emojis; small inline icons inside each box) -->
+    <div class="cats">
+      <a class="catbtn" href="#/goods">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16l-2 11H6L4 7zm2-3h12v2H6z" fill="#b1840f"/></svg>
+        <span style="font-weight:800">Goods</span>
+      </a>
+      <a class="catbtn" href="#/services">
+        <svg viewBox="0 0 24 24"><path d="M3 14l3-3 4 4 8-8 3 3-11 11z" fill="#b1840f"/></svg>
+        <span style="font-weight:800">Services</span>
+      </a>
+      <a class="catbtn" href="#/rentals">
+        <svg viewBox="0 0 24 24"><path d="M12 3l9 8h-3v9H6v-9H3z" fill="#b1840f"/></svg>
+        <span style="font-weight:800">Rentals</span>
+      </a>
+      <a class="catbtn" href="#/jobs">
+        <svg viewBox="0 0 24 24"><path d="M9 3h6v3h5v4H4V6h5V3zm-5 8h20v10H4V11z" fill="#b1840f"/></svg>
+        <span style="font-weight:800">Jobs</span>
+      </a>
+      <a class="catbtn" href="#/ads">
+        <svg viewBox="0 0 24 24"><path d="M3 5h18v4H3zM6 11h12v8H6z" fill="#b1840f"/></svg>
+        <span style="font-weight:800">Advert with Bloggers</span>
+      </a>
+    </div>
+
+    <!-- Auth / Admin quick links (no emojis) -->
     <nav>
-      <a href="#/">🏠 Home</a>
-      <a href="#/goods">🛍️ Goods</a>
-      <a href="#/services">🛠️ Services</a>
-      <a href="#/rentals">🏡 Rentals</a>
-      <a href="#/jobs">💼 Jobs</a>
-      <a href="#/ads">📣 Advert with Bloggers</a>
       <span class="spacer"></span>
-      <a href="#/search">🔎 Search</a>
-      <a href="#/location">📍 My Location</a>
-      <a id="adminLink" href="#/admin" style="display:none">🛡️ Admin</a>
-      <a id="quotesLink" href="#/admin/quotes" style="display:none">🛡️ Quotes</a>
-      <a id="adCampLink" href="#/ads/campaigns" style="display:none">🛡️ Ad Campaigns</a>
-      <a id="adminAppAdsLink" href="#/admin/app-ads" style="display:none">🛡️ App Ads</a>
+      <a id="adminLink" href="#/admin" style="display:none">Admin</a>
+      <a id="quotesLink" href="#/admin/quotes" style="display:none">Quotes</a>
+      <a id="adCampLink" href="#/ads/campaigns" style="display:none">Ad Campaigns</a>
+      <a id="adminAppAdsLink" href="#/admin/app-ads" style="display:none">App Ads</a>
       <span id="authArea"></span>
     </nav>
 
-    <!-- Tiny hero: ONLY visible on Home, hidden by default -->
-    <div id="heroSection" class="hero" style="display:none">
+    <!-- Tiny hero: ONLY visible on Home (Goods) -->
+    <div id="heroSection" class="hero">
       <div class="hero-inner">
         <div id="heroRotator" class="hero-box"></div>
       </div>

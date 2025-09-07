@@ -1,536 +1,902 @@
-/* Sleconomicmarket SPA (localStorage backend)
-   Mobile-first with big Search & My Location row, category boxes, tiny hero on Home,
-   tiny footer, “Return” button, Google Sign-In + email code verification.
-   Business logic includes:
-   - Goods/Services/Rentals/Jobs/Ads with separate feeds
-   - Boost in NLe (NLe100/mo), 14-day trial for all except Ads (mandatory boost)
-   - Google location picker on Goods/Rentals/Services forms
-   - Messaging + Inbox with "Seen" for users (not for admins)
-   - Save/Share, Search, Listings, Post quick chooser
-   - Admin & Limited Admin: approve limited-admin, pin posts, bloggers, campaigns, app ads
-   - Post status: available | pending | sold
-   - Sierra Leone–only posting for non-admins (COUNTRY_CODE_ALLOW="SL")
-*/
+// ===== Tiny helpers =====
+const $ = (sel, node=document)=> node.querySelector(sel);
+const $$ = (sel, node=document)=> Array.from(node.querySelectorAll(sel));
+const uid = ()=> Math.random().toString(36).slice(2)+Date.now().toString(36);
 
-const $ = (sel, node=document) => node.querySelector(sel);
-const $$ = (sel, node=document) => Array.from(node.querySelectorAll(sel));
-const cap = s => (s||'').charAt(0).toUpperCase() + (s||'').slice(1);
-const cents = n => 'NLe ' + (Math.round(Number(n||0))/100).toLocaleString();
+// ===== ENV (loaded at runtime) =====
+let AFRIMONEY_NUMBER='—', ORANGEMONEY_NUMBER='—', GOOGLE_MAPS_API_KEY='',
+    ADMIN_EMAILS=[], COUNTRY_CODE_ALLOW='', GOOGLE_OAUTH_CLIENT_ID='',
+    ADMIN_PANEL_PASSWORD='';
 
-let AFRIMONEY_NUMBER='—', ORANGEMONEY_NUMBER='—', GOOGLE_MAPS_API_KEY='', ADMIN_EMAILS=[], COUNTRY_CODE_ALLOW='', GOOGLE_OAUTH_CLIENT_ID='';
-
-// Local DB
+// ===== Local DB in localStorage =====
 const DB = {
   get data(){
     const raw = localStorage.getItem('sl_data');
     let d = raw ? JSON.parse(raw) : {};
     d.users ||= []; d.sessions ||= {}; d.posts ||= []; d.threads ||= []; d.messages ||= [];
-    d.notifications ||= []; d.mails ||= [];
-    d.quoteRequests ||= [];
-    d.bloggers ||= [];
-    d.adCampaigns ||= [];
-    d.appAds ||= [];
-    d.saved ||= [];
+    d.notifications ||= []; d.mails ||= []; d.saved ||= []; d.transactions ||= [];
+    d.quoteRequests ||= []; d.bloggers ||= []; d.adCampaigns ||= []; d.appAds ||= [];
+    d.users.forEach(u=>{ u.createdAt ||= new Date().toISOString(); u.profile_photo_data ||= ''; u.limitedAdminStatus ||= 'none'; });
     return d;
   },
   set data(v){ localStorage.setItem('sl_data', JSON.stringify(v)); }
 };
-const uid = () => Math.random().toString(36).slice(2,9)+Date.now().toString(36);
 
-// Geo helpers
-function inSierraLeone(){ return COUNTRY_CODE_ALLOW === 'SL'; }
-
-// Auth helpers
-function getUserById(id){ const d=DB.data; return d.users.find(u=>u.id===id)||null; }
-function isMainAdmin(user){ return !!user && ADMIN_EMAILS.includes(user.email); }
-function isLimitedAdmin(user){ return !!user && user.limitedAdminStatus==='approved'; }
-function isAdminOrLimited(user){ return isMainAdmin(user) || isLimitedAdmin(user); }
-function isApprovedBlogger(user){ if(!user) return false; const d=DB.data; return (d.bloggers||[]).some(b=>b.userId===user.id && b.status==='approved'); }
-function isAdminOrBlogger(u){ return isAdminOrLimited(u) || isApprovedBlogger(u); }
-
-// Notifications / Mail
-function notifyUser(userId,title,body,extra={}){
-  const d=DB.data;
-  d.notifications ||= [];
-  d.notifications.push({
-    id: uid(),
-    userId,
-    title,
-    body,
-    type: extra.type || 'info',
-    cta_label: extra.cta_label || '',
-    cta_url: extra.cta_url || '',
-    image_name: extra.image_name || '',
-    ts: Date.now(),
-    read: false
-  });
-  DB.data = d;
-}
-function listMyNotifications(){ const me=API._requireUser(); if(!me) return []; const d=DB.data; return (d.notifications||[]).filter(n=>n.userId===me.id).sort((a,b)=>b.ts-a.ts); }
-function markAllNotificationsRead(){ const me=API._requireUser(); if(!me) return; const d=DB.data; (d.notifications||[]).forEach(n=>{ if(n.userId===me.id) n.read=true; }); DB.data=d; }
-function sendMailMock(to,subject,body){ if(!to) return; const d=DB.data; d.mails ||= []; d.mails.push({id:uid(),to,subject,body,ts:Date.now()}); DB.data=d; }
-
-// Boop sound
-function boop(){
-  try{
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ctx.createOscillator(); const g = ctx.createGain();
-    o.type='sine'; o.frequency.value=880; g.gain.value=0.0001;
-    o.connect(g); g.connect(ctx.destination); o.start();
-    const now=ctx.currentTime;
-    g.gain.exponentialRampToValueAtTime(0.08, now+0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, now+0.20);
-    o.stop(now+0.22);
-  }catch{}
-}
-function playBoopOnNew(){
-  const me = API._requireUser?.(); if(!me) return;
-  const d=DB.data; const lastKey=`sl_last_booped_ts_${me.id}`; const last=Number(localStorage.getItem(lastKey)||0);
-  const mine=(d.notifications||[]).filter(n=>n.userId===me.id && !n.read);
-  if(!mine.length) return;
-  const maxTs=Math.max(...mine.map(n=>n.ts||0));
-  if (maxTs>last){ boop(); localStorage.setItem(lastKey,String(maxTs)); }
-}
-
-// Saved
-function isSaved(postId){ const me=API._requireUser?.(); if(!me) return false; const d=DB.data; return (d.saved||[]).some(s=>s.userId===me.id && s.postId===postId); }
-function saveCount(postId){ const d=DB.data; return (d.saved||[]).filter(s=>s.postId===postId).length; }
-
-// Google Maps loader
-let _mapsLoading=null;
-function ensureGoogleMaps(){
-  if (!GOOGLE_MAPS_API_KEY) return Promise.resolve(null);
-  if (_mapsLoading) return _mapsLoading;
-  _mapsLoading = new Promise((resolve,reject)=>{
-    const s=document.createElement('script');
-    s.src=`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(GOOGLE_MAPS_API_KEY)}&libraries=places`;
-    s.async=true; s.defer=true;
-    s.onload=()=>resolve(window.google?.maps||null);
-    s.onerror=()=>reject(new Error('Failed to load Google Maps'));
-    document.head.appendChild(s);
-  });
-  return _mapsLoading;
-}
-
-// Boost trial helpers
-function trialActive(p){
-  if (!p || !p.boost_trial_started_at || !p.boost_trial_days) return false;
-  const ms = p.boost_trial_days * 24 * 60 * 60 * 1000;
-  return (Date.now() - new Date(p.boost_trial_started_at).getTime()) < ms;
-}
-function getAllStaffUserIds(){
-  const d=DB.data; const ids=new Set();
-  d.users.forEach(u=>{ if (ADMIN_EMAILS.includes(u.email) || u.limitedAdminStatus==='approved') ids.add(u.id); });
-  return Array.from(ids);
-}
-function sweepTrials(){
-  const d=DB.data; let changed=false;
-  (d.posts||[]).forEach(p=>{
-    if (p.boost_trial_days>0 && p.boost_trial_started_at && !p.boost_trial_ended_notified){
-      if (!trialActive(p)){
-        getAllStaffUserIds().forEach(uid=>{
-          notifyUser(uid,'Trial Ended',`Trial ended for "${p.title}" (${p.category}).`,{type:'info'});
-          const to=getUserById(uid)?.email||''; if(to) sendMailMock(to,'Trial Ended',`Listing "${p.title}" (category: ${p.category}) trial has ended.`);
-        });
-        p.boost_trial_ended_notified=true; changed=true;
-      }
-    }
-  });
-  if (changed) DB.data=d;
-}
-
-/* ---------------------------------
-   API shim (localStorage backend)
------------------------------------*/
+// ===== Auth + API shim =====
 const API = {
   token: localStorage.getItem('token') || null,
-  setToken(t){ this.token=t; localStorage.setItem('token', t||''); renderAuth(); route(); },
-  _requireUser(){ const d=DB.data, s=this.token && d.sessions[this.token]; return s ? d.users.find(u=>u.id===s.userId) : null; },
+  setToken(t){ this.token=t; if(t) localStorage.setItem('token',t); else localStorage.removeItem('token'); renderAuth(); toggleAdminLink(); },
+  _requireUser(){
+    try{
+      const t=this.token; if(!t) return null;
+      const d=DB.data; const s=d.sessions[t]; if(!s) return null;
+      return d.users.find(u=>u.id===s.userId)||null;
+    }catch{return null}
+  },
   async get(path){
-    const d=DB.data; const me=this._requireUser();
-    if (path.startsWith('/api/messages/thread')){
-      const tid = new URLSearchParams(path.split('?')[1]).get('tid');
-      return d.messages.filter(m=>m.threadId===tid).sort((a,b)=>a.ts-b.ts);
+    // Routes
+    if (path.startsWith('/api/posts')){
+      const url = new URL(location.origin+path);
+      const cat = url.searchParams.get('category');
+      const d=DB.data;
+      let list = d.posts.slice();
+      if (cat) list = list.filter(p=> p.category===cat);
+      return list;
     }
-    if (path.startsWith('/api/messages/threads')){
-      const mine = d.threads
-        .filter(t=>me && t.participants.includes(me.id))
-        .sort((a,b)=> b.updatedAt.localeCompare(a.updatedAt))
-        .map(t=>{
-          const otherId = t.participants.find(id=>id!==me.id);
-          const other = d.users.find(u=>u.id===otherId) || {};
-          const last = d.messages.filter(m=>m.threadId===t.id).sort((a,b)=>b.ts-a.ts)[0];
-          let seenByOther=false;
-          if (last && last.from===me.id){
-            const rb = last.readBy || [];
-            seenByOther = rb.includes(otherId);
-          }
-          return { id:t.id, withEmail:other.email||'(unknown)', lastText:last?last.text:'', updatedAt:t.updatedAt, seenByOther };
-        });
-      return mine;
-    }
-    if (path.startsWith('/api/posts?category=')){
-      const cat = path.split('=')[1];
-      return d.posts.filter(p=>p.category===cat);
-    }
-    if (path==='/api/ads/blogger/list'){ return {bloggers:(d.bloggers||[]).filter(b=>b.status==='approved')}; }
     if (path==='/api/ads/campaigns/list'){
-      const me=this._requireUser(); if (!isAdminOrBlogger(me)) return {error:'Restricted'};
-      const items = (d.adCampaigns||[]).slice().sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(c=>{
-        const owner=d.users.find(u=>u.id===c.ownerId)||{};
-        return {...c, ownerEmail: isAdminOrLimited(me) ? (owner.email||'') : '' };
-      });
-      return {campaigns:items};
+      const d=DB.data; return {campaigns:d.adCampaigns||[]};
     }
-    return {};
+    return {error:'Unknown GET '+path};
   },
   async post(path, body){
-    const d=DB.data;
-
-    // Email verification code (demo)
+    // ---- Auth flows
+    if (path==='/api/auth/login'){
+      const {email,password}=body||{};
+      const d=DB.data; const u=d.users.find(x=>x.email===(email||'').trim().toLowerCase());
+      if(!u || (u.password||'')!==String(password||'')) return {error:'Invalid credentials'};
+      const t='t_'+uid(); d.sessions[t]={userId:u.id,ts:Date.now()}; DB.data=d; return {token:t};
+    }
     if (path==='/api/auth/send-code'){
-      const {email} = body||{}; if(!email) return {error:'Email required'};
-      const code = String(Math.floor(100000 + Math.random()*900000));
-      const key = `sl_verify_${email.toLowerCase()}`;
-      localStorage.setItem(key, JSON.stringify({code, ts: Date.now()}));
-      alert(`Demo verification code (for ${email}): ${code}`);
+      const {email}=body||{}; const code=String(Math.floor(100000+Math.random()*900000));
+      localStorage.setItem('sl_signup_code_'+String(email||'').toLowerCase(), JSON.stringify({code,ts:Date.now()}));
+      alert(`Demo verification code for ${email}: ${code}`);
       return {ok:true};
     }
     if (path==='/api/auth/verify-signup'){
-      const {email,password,code}=body||{}; if(!email||!password||!code) return {error:'All fields required'};
-      const key=`sl_verify_${email.toLowerCase()}`, obj=JSON.parse(localStorage.getItem(key)||'{}');
-      if (!obj.code || obj.code!==String(code)) return {error:'Invalid code'};
+      const {email, password, code}=body||{};
+      const key='sl_signup_code_'+String(email||'').toLowerCase();
+      const obj=JSON.parse(localStorage.getItem(key)||'{}'); if(!obj.code || obj.code!==String(code||'')) return {error:'Invalid code'};
       localStorage.removeItem(key);
-      if (d.users.some(u=>u.email===email)) return {error:'User exists'};
-      const u={id:uid(),email,password,limitedAdminStatus:'none',verified:true}; d.users.push(u);
-      const tok=uid(); d.sessions[tok]={userId:u.id}; DB.data=d; return {token:tok};
+      const d=DB.data;
+      let u=d.users.find(x=>x.email===(email||'').toLowerCase());
+      if (!u){
+        u={id:uid(),email:(email||'').toLowerCase(),password,limitedAdminStatus:'none',verified:true,createdAt:new Date().toISOString()};
+        d.users.push(u);
+      }else{ u.password=password; u.verified=true; }
+      const t='t_'+uid(); d.sessions[t]={userId:u.id,ts:Date.now()}; DB.data=d; return {token:t};
     }
-
-    // Email/password login
-    if (path==='/api/auth/login'){
-      const {email,password}=body||{}; const u=d.users.find(x=>x.email===email && x.password===password);
-      if(!u) return {error:'Invalid credentials'}; const tok=uid(); d.sessions[tok]={userId:u.id}; DB.data=d; return {token:tok};
-    }
-
-    // Google Sign-In (ID token from Google Identity Services) — demo trust
     if (path==='/api/auth/google-id-token'){
-      const {id_token} = body||{}; if(!id_token) return {error:'Missing token'};
-      const payload = JSON.parse(atob(id_token.split('.')[1]||'{}')); // {email, sub}
-      const email = payload.email; if(!email) return {error:'No email in token'};
-      let u=d.users.find(x=>x.email===email);
-      if(!u){ u={id:uid(),email,password:'',limitedAdminStatus:'none',verified:true, googleSub:payload.sub}; d.users.push(u); }
-      const tok=uid(); d.sessions[tok]={userId:u.id}; DB.data=d; return {token:tok};
+      const idt=(body||{}).id_token; if(!idt) return {error:'Missing id token'};
+      // demo: just create a fake user
+      const email='googleuser+'+idt.slice(-6)+'@example.com';
+      const d=DB.data; let u=d.users.find(x=>x.email===email);
+      if(!u){ u={id:uid(),email,password:'',verified:true,createdAt:new Date().toISOString()}; d.users.push(u); }
+      const t='t_'+uid(); d.sessions[t]={userId:u.id,ts:Date.now()}; DB.data=d; return {token:t};
+    }
+    if (path==='/api/auth/change-password'){
+      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
+      const {oldPass,newPass}=body||{};
+      const d=DB.data; const u=d.users.find(x=>x.id===me.id);
+      if((u.password||'')!==String(oldPass||'')) return {error:'Old password incorrect'};
+      u.password=String(newPass||''); DB.data=d; return {ok:true};
+    }
+    if (path==='/api/auth/forgot/send'){
+      const {email}=body||{}; const d=DB.data; const u=d.users.find(x=>x.email===String(email||'')); if(!u) return {error:'Email not found'};
+      const code=String(Math.floor(100000+Math.random()*900000));
+      localStorage.setItem(`sl_reset_${email.toLowerCase()}`, JSON.stringify({code,ts:Date.now()}));
+      alert(`Demo reset code for ${email}: ${code}`);
+      return {ok:true};
+    }
+    if (path==='/api/auth/forgot/verify'){
+      const {email,code,newPass}=body||{};
+      const key=`sl_reset_${String(email||'').toLowerCase()}`;
+      const obj=JSON.parse(localStorage.getItem(key)||'{}'); if(!obj.code || obj.code!==String(code||'')) return {error:'Invalid code'};
+      localStorage.removeItem(key);
+      const d=DB.data; const u=d.users.find(x=>x.email===String(email||'')); if(!u) return {error:'Email not found'};
+      u.password=String(newPass||''); DB.data=d; return {ok:true};
     }
 
-    // Legacy mock Google (kept for fallback)
-    if (path==='/api/auth/google/mock'){
-      const {email}=body||{}; let u=d.users.find(x=>x.email===email);
-      if(!u){ u={id:uid(),email,password:'',limitedAdminStatus:'none'}; d.users.push(u); }
-      const tok=uid(); d.sessions[tok]={userId:u.id}; DB.data=d; return {token:tok};
-    }
-
-    // Limited admin request
-    if (path==='/api/users/request-limited-admin'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      me.limitedAdminStatus = me.limitedAdminStatus==='approved' ? 'approved' : 'pending';
-      DB.data=d; return {status:me.limitedAdminStatus};
-    }
-
-    // Messaging
-    if (path==='/api/messages/start-with-user'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      const {userId}=body||{}; const other=d.users.find(u=>u.id===userId); if(!other) return {error:'User not found'};
-      let th=d.threads.find(t=>t.participants?.length===2 && t.participants.includes(me.id) && t.participants.includes(other.id));
-      if(!th){ th={id:uid(),participants:[me.id,other.id],updatedAt:new Date().toISOString()}; d.threads.push(th); DB.data=d; }
-      return {threadId:th.id};
-    }
-    if (path==='/api/messages/send'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      const {threadId,text}=body||{}; const th=d.threads.find(t=>t.id===threadId); if(!th) return {error:'No thread'};
-      th.updatedAt=new Date().toISOString();
-      const msg={id:uid(),threadId,from:me.id,text:(text||'').trim(),ts:Date.now(),readBy:[me.id]};
-      d.messages.push(msg); DB.data=d; return {ok:true};
-    }
-    if (path==='/api/messages/seen'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if (isAdminOrLimited(me)) return {ok:true, skipped:'admin'}; // admins don't show "seen"
-      const {threadId}=body||{}; const th=d.threads.find(t=>t.id===threadId);
-      if (!th || !th.participants.includes(me.id)) return {error:'Not in thread'};
-      let changed=0;
-      d.messages.forEach(m=>{ if(m.threadId!==threadId) return; m.readBy ||= []; if(!m.readBy.includes(me.id) && m.from!==me.id){ m.readBy.push(me.id); changed++; } });
-      if (changed) DB.data=d; return {ok:true,changed};
-    }
-
-    // Saved toggle
+    // ---- Saved toggle
     if (path==='/api/saved/toggle'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      const {postId}=body||{}; const idx=(d.saved||[]).findIndex(s=>s.userId===me.id && s.postId===postId);
-      let saved; if(idx>=0){ d.saved.splice(idx,1); saved=false; } else { d.saved.push({id:uid(),userId:me.id,postId,ts:Date.now()}); saved=true; }
-      DB.data=d; return {ok:true, saved, count: saveCount(postId)};
+      const {postId}=body||{}; const d=DB.data; d.saved ||= [];
+      const i=d.saved.findIndex(s=> s.userId===me.id && s.postId===postId);
+      if (i>=0){ d.saved.splice(i,1); DB.data=d; return {saved:false}; }
+      d.saved.push({id:uid(),userId:me.id,postId}); DB.data=d; return {saved:true};
     }
 
-    // Create posts
+    // ---- Post create
     if (path==='/api/posts'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if (!isAdminOrLimited(me) && !inSierraLeone()) return {error:'Service available in Sierra Leone only'};
-
-      // Ads require Boost ≥1 month + payment screenshot
-      if (body.category === 'ads' && Number(body.boosted_months || 0) <= 0){
-        return { error: 'Advertising posts require Boost (minimum 1 month).' };
+      const b=body||{};
+      // Sierra Leone-only gate for non-admins
+      if (!isAdminOrLimited(me) && COUNTRY_CODE_ALLOW==='SL'){
+        // If you wired geolocation/ISO lookup, enforce here. Demo: allow.
       }
+      const isAds = (b.category==='ads');
+      const months = Math.max(0, Number(b.boosted_months||0));
+      if (isAds && months<=0) return {error:'Ads require paid boost (no trial).'};
+      if (months>0 && !b.payment_screenshot_name) return {error:'Payment screenshot required for boost.'};
 
-      const months = Number(body.boosted_months || 0);
-      const trialOnly = !!body.boost_trial && months === 0;
-      if (body.category === 'ads'){
-        if (!(body.payment_screenshot_name && String(body.payment_screenshot_name).trim())){
-          return { error:'Advertising requires a mobile money payment screenshot.' };
-        }
-      } else if (!trialOnly && months > 0){
-        if (!(body.payment_screenshot_name && String(body.payment_screenshot_name).trim())){
-          return { error:'Mobile money payment screenshot is required for Boost.' };
-        }
-      }
-
-      const p = {
-        id:uid(), userId:me.id,
-        category:body.category,
-        title:(body.title||'').trim(),
-        price_cents:Number(body.price_cents||0),
-        description:(body.description||'').trim(),
-
-        boosted_months:Number(body.boosted_months||0),
-        boost_contact_phone:(body.boost_contact_phone||'').trim(),
-        boost_trial_days: (body.boost_trial ? 14 : 0),
-        boost_trial_started_at: (body.boost_trial ? new Date().toISOString() : null),
-        payment_screenshot_name: (body.payment_screenshot_name || '').trim(),
-
-        is_pinned:false, pinned_at:null, pinned_by:null,
-
-        parent_cat: body.parent_cat||'',
-        child_cat: body.child_cat||'',
-        condition: body.condition||'',
-        item_type: (body.item_type||'').trim(),
-        brand: (body.brand||'').trim(),
-        color: (body.color||'').trim(),
-        price_firm: !!(body.price_firm==='1' || body.price_firm===true),
-        photos: Array.isArray(body.photos)? body.photos.slice(0,8) : [],
-
-        location_address: (body.location_address||'').trim(),
-        location_lat: body.location_lat!=null ? Number(body.location_lat) : null,
-        location_lng: body.location_lng!=null ? Number(body.location_lng) : null,
-        location_place_id: (body.location_place_id||'').trim(),
-
-        // Services
-        intro:(body.intro||'').trim(),
-        service_desc:(body.service_desc||'').trim(),
-        service_parent:(body.service_parent||'').trim(),
-        service_child:(body.service_child||'').trim(),
-        price_model:(body.price_model||'').trim(),
-        min_price_cents: body.min_price_cents!=null ? Number(body.min_price_cents) : null,
-        service_radius_km: body.service_radius_km!=null ? Number(body.service_radius_km) : null,
-        availability_days: Array.isArray(body.availability_days) ? body.availability_days : [],
-        profile_photo_name: (body.profile_photo_name||'').trim(),
-        portfolio_names: Array.isArray(body.portfolio_names) ? body.portfolio_names.slice(0,8) : [],
-
-        // Rentals
-        listing_type: (body.listing_type || 'rent'),
-        property_parent: (body.property_parent || '').trim(),
-        property_child: (body.property_child || '').trim(),
-        bedrooms: (body.bedrooms || '').trim(),
-        bathrooms: (body.bathrooms || '').trim(),
-        furnished: (body.furnished || '').trim(),
-        size_sqm: body.size_sqm!=null ? Number(body.size_sqm) : null,
-        lease_term: (body.lease_term || '').trim(),
-        available_from: (body.available_from || '').trim(),
-        deposit_cents: body.deposit_cents!=null ? Number(body.deposit_cents) : null,
-        pets_allowed: (body.pets_allowed || '').trim(),
-        parking_spots: body.parking_spots!=null ? Number(body.parking_spots) : null,
-        amenities: Array.isArray(body.amenities) ? body.amenities : (body.amenities? [body.amenities] : []),
-        utilities: Array.isArray(body.utilities) ? body.utilities : (body.utilities? [body.utilities] : []),
-
+      const p={
+        id:uid(), userId:me.id, category:b.category||'goods',
+        title:b.title||'', description:b.description||'',
+        price_cents: Number(b.price_cents||0),
+        photos: Array.isArray(b.photos)? b.photos.slice(0,8) : [],
+        photos_data: Array.isArray(b.photos_data)? b.photos_data.slice(0,8) : [],
+        boosted_months: months,
+        boost_contact_phone: (b.boost_contact_phone||'').trim(),
+        payment_screenshot_name: b.payment_screenshot_name||'',
+        location_lat: b.location_lat!=null? Number(b.location_lat): null,
+        location_lng: b.location_lng!=null? Number(b.location_lng): null,
+        location_address: b.location_address||'',
+        service_parent: b.service_parent||'',
         status: 'available',
-        createdAt:new Date().toISOString()
+        createdAt: Date.now()
       };
-      d.posts.push(p); DB.data=d; return p;
-    }
-
-    // Update post status
-    if (path === '/api/posts/update-status'){
-      const me = this._requireUser(); if(!me) return {error:'Unauthorized'};
-      const { postId, status } = body || {};
-      if (!['available','pending','sold'].includes(status)) return {error:'Bad status'};
-      const p = d.posts.find(x => x.id === postId);
-      if (!p) return {error:'Post not found'};
-      const canEdit = (p.userId === me.id) || isAdminOrLimited(me);
-      if (!canEdit) return {error:'Forbidden'};
-      p.status = status;
-      DB.data = d;
-      return {ok:true, post:p};
-    }
-
-    // Pin/Unpin
-    if (path==='/api/admin/posts/pin'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if(!isAdminOrLimited(me)) return {error:'Staff only'};
-      const {postId,pin}=body||{}; const p=d.posts.find(x=>x.id===postId); if(!p) return {error:'Post not found'};
-      p.is_pinned=!!pin; p.pinned_at=pin?new Date().toISOString():null; p.pinned_by=pin?me.id:null;
-      DB.data=d; return {ok:true,post:p};
-    }
-
-    // Quotes (Services)
-    if (path==='/api/quotes/create'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      const {postId,details}=body||{}; const post=d.posts.find(p=>p.id===postId); if(!post) return {error:'Post not found'};
-      if (post.category!=='services') return {error:'Quotes only for services'};
-      const q={id:uid(),postId,requesterId:me.id,providerId:post.userId,details:(details||'').trim(),status:'open',createdAt:new Date().toISOString()};
-      d.quoteRequests.push(q); DB.data=d;
-      const th=await API.post('/api/messages/start-with-user',{userId:q.providerId});
-      if(!th.error){ await API.post('/api/messages/send',{threadId:th.threadId,text:`New quote request for "${post.title}": ${q.details}`}); }
-      notifyUser(post.userId,'New Quote Request', `For "${post.title}"`,{type:'info'});
-      sendMailMock(getUserById(post.userId)?.email||'','New Quote Request', q.details);
-      return {ok:true,quote:q};
-    }
-    if (path==='/api/admin/quotes/list'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if(!isAdminOrLimited(me)) return {error:'Staff only'};
-      const list=d.quoteRequests.slice().sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(q=>{
-        const buyer=d.users.find(u=>u.id===q.requesterId)||{}, prov=d.users.find(u=>u.id===q.providerId)||{}, post=d.posts.find(p=>p.id===q.postId)||{};
-        return {...q, requesterEmail:buyer.email||'', providerEmail:prov.email||'', postTitle:post.title||''};
-      }); return {quotes:list};
-    }
-    if (path==='/api/admin/quotes/update'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if(!isAdminOrLimited(me)) return {error:'Staff only'};
-      const {quoteId,action}=body||{}; const q=d.quoteRequests.find(x=>x.id===quoteId); if(!q) return {error:'Quote not found'};
-      if (!['in_progress','closed','rejected'].includes(action)) return {error:'Unknown action'};
-      q.status=action; DB.data=d; return {ok:true,quote:q};
-    }
-
-    // Bloggers/Campaigns
-    if (path==='/api/ads/blogger/create'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      const { platform, handle, price_cents, bio, followers, profile_photo_name } = body||{};
-      let b = d.bloggers.find(x=>x.userId===me.id);
-      if (!b){
-        b = { id:uid(), userId:me.id, platform:(platform||'').trim(), handle:(handle||'').trim(), profile_photo_name:(profile_photo_name||'').trim(),
-              followers:Number(followers||0), price_cents:Number(price_cents||0), bio:(bio||'').trim(), status:'pending', createdAt:new Date().toISOString()};
-        d.bloggers.push(b);
-      } else {
-        b.platform=(platform||'').trim(); b.handle=(handle||'').trim(); b.profile_photo_name=(profile_photo_name||'').trim();
-        b.followers=Number(followers||0); b.price_cents=Number(price_cents||0); b.bio=(bio||'').trim(); b.status=b.status||'pending';
+      // 14d trial for non-ads when not paid
+      if (!isAds && months===0){
+        p.boost_trial_start = Date.now();
       }
-      DB.data=d; return {ok:true, blogger:b};
-    }
-    if (path==='/api/admin/bloggers/update'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if(!isAdminOrLimited(me)) return {error:'Staff only'};
-      const {bloggerId,action}=body||{}; const b=d.bloggers.find(x=>x.id===bloggerId); if(!b) return {error:'Blogger not found'};
-      if (!['approved','rejected','pending'].includes(action)) return {error:'Bad action'};
-      b.status=action; DB.data=d; return {ok:true,blogger:b};
-    }
-    if (path==='/api/ads/campaign/create'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      const {product_title,product_desc,target_platform,budget_cents,payment_screenshot_name}=body||{};
-      const c={ id:uid(), ownerId:me.id, product_title:(product_title||'').trim(), product_desc:(product_desc||'').trim(),
-        target_platform:(target_platform||'').trim(), budget_cents:Number(budget_cents||0), payment_screenshot_name:(payment_screenshot_name||'').trim(),
-        status:'pending_payment', assigned_blogger_id:null, commission_cents:null, createdAt:new Date().toISOString() };
-      d.adCampaigns.push(c); DB.data=d; return {ok:true,campaign:c};
-    }
-    if (path==='/api/admin/ads/campaigns/verify'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if(!isAdminOrLimited(me)) return {error:'Staff only'};
-      const {campaignId}=body||{}; const c=d.adCampaigns.find(x=>x.id===campaignId); if(!c) return {error:'Campaign not found'};
-      c.status='verified'; c.commission_cents=Math.round((c.budget_cents||0)*0.05); DB.data=d; return {ok:true,campaign:c};
-    }
-    if (path==='/api/admin/ads/campaigns/assign'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if(!isAdminOrLimited(me)) return {error:'Staff only'};
-      const {campaignId,bloggerId}=body||{}; const c=d.adCampaigns.find(x=>x.id===campaignId); const b=d.bloggers.find(x=>x.id===bloggerId && x.status==='approved');
-      if(!c) return {error:'Campaign not found'}; if(!b) return {error:'Approved blogger not found'};
-      c.assigned_blogger_id=b.id; c.status='assigned'; DB.data=d; return {ok:true,campaign:c};
-    }
-    if (path==='/api/admin/ads/campaigns/update'){
-      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
-      if(!isAdminOrLimited(me)) return {error:'Staff only'};
-      const {campaignId,action}=body||{}; const c=d.adCampaigns.find(x=>x.id===campaignId); if(!c) return {error:'Campaign not found'};
-      if (!['completed','rejected','pending_payment'].includes(action)) return {error:'Bad action'};
-      c.status=action; DB.data=d; return {ok:true,campaign:c};
+
+      const d=DB.data; d.posts.push(p); DB.data=d;
+      if (months>0){
+        addTransaction({userId:me.id,type:'boost_purchase',amount_nle:months*100,meta:{postId:p.id,category:p.category}});
+      }
+      return p;
     }
 
-    // Admin App Broadcast (selected users supported)
-    if (path==='/api/admin/broadcast/create'){
+    // ---- Boost existing listing from Account
+    if (path==='/api/posts/boost'){
+      const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
+      const d=DB.data; const {postId,months,payment_screenshot_name}=body||{};
+      const p=d.posts.find(x=>x.id===postId && x.userId===me.id); if(!p) return {error:'Post not found or not yours'};
+      const m=Math.max(1, Number(months||0));
+      if (!payment_screenshot_name) return {error:'Payment screenshot required'};
+      p.boosted_months = (Number(p.boosted_months||0) + m);
+      p.payment_screenshot_name = payment_screenshot_name;
+      DB.data=d;
+      addTransaction({userId:me.id,type:'boost_purchase',amount_nle:m*100,meta:{postId:p.id}});
+      return {ok:true,post:p};
+    }
+
+    // ---- Main admin: set limited-admin status
+    if (path==='/api/admin/users/set-limited'){
       const me=this._requireUser(); if(!me) return {error:'Unauthorized'};
       if (!isMainAdmin(me)) return {error:'Admins only'};
-      const { title, message, cta_label, cta_url, audience } = body || {};
-
-      let targetEmails = [];
-      if (typeof body.target_emails === 'string' && body.target_emails.trim()){
-        try { targetEmails = JSON.parse(body.target_emails); }
-        catch { targetEmails = String(body.target_emails).split(',').map(s=>s.trim()).filter(Boolean); }
-      } else if (Array.isArray(body.target_emails)){
-        targetEmails = body.target_emails.map(String).map(s=>s.trim()).filter(Boolean);
-      }
-
-      d.appAds ||= [];
-      const ad = {
-        id: uid(),
-        title: String(title||'').trim(),
-        message: String(message||'').trim(),
-        cta_label: (cta_label||'').trim(),
-        cta_url: (cta_url||'').trim(),
-        image_name: (body.image_name || body.adImg_name || '').trim(),
-        audience: (audience || (targetEmails.length ? 'selected' : 'all')),
-        createdAt: new Date().toISOString(),
-        senderId: me.id
-      };
-      d.appAds.push(ad);
-
-      let recipients = d.users.filter(u=>u.id!==me.id);
-      const posts=d.posts||[];
-      const userHasPostedCat=(uid,cat)=> posts.some(p=>p.userId===uid && p.category===cat);
-      const isBoosted=(uid)=> posts.some(p=>p.userId===uid && (Number(p.boosted_months||0)>0));
-      const isTrial=(uid)=> posts.some(p=>p.userId===uid && trialActive(p));
-
-      if (ad.audience==='boosted') recipients = recipients.filter(u=>isBoosted(u.id));
-      else if (ad.audience==='trial') recipients = recipients.filter(u=>isTrial(u.id));
-      else if (ad.audience?.startsWith('cat:')){
-        const cat=ad.audience.split(':')[1]; recipients = recipients.filter(u=>userHasPostedCat(u.id,cat));
-      } else if (ad.audience==='selected' && targetEmails.length){
-        const set = new Set(targetEmails.map(e=>e.toLowerCase()));
-        recipients = recipients.filter(u=> set.has((u.email||'').toLowerCase()));
-      }
-
-      recipients.forEach(u=>{
-        notifyUser(u.id, ad.title, ad.message, {type:'broadcast', cta_label:ad.cta_label, cta_url:ad.cta_url, image_name:ad.image_name});
-      });
-      DB.data=d; 
-      return {ok:true, broadcast:ad, sent:recipients.length};
+      const d=DB.data;
+      const {userId, status} = body||{};
+      if (!['approved','pending','none'].includes(status||'')) return {error:'Bad status'};
+      const u=d.users.find(x=>x.id===userId); if(!u) return {error:'User not found'};
+      u.limitedAdminStatus = status;
+      DB.data=d;
+      return {ok:true, user:{id:u.id,email:u.email,limitedAdminStatus:u.limitedAdminStatus}};
     }
 
-    return {};
+    return {error:'Unknown POST '+path};
   },
   async postForm(path, form){
+    // Convert FormData to JSON, preserving file names and data URLs
     const obj={}, photos=[];
     for (const [k,v] of form.entries()){
       if (k==='photos' && v instanceof File){ photos.push(v.name||'photo'); }
-      else if (k==='portfolio' && v instanceof File){ (obj.portfolio_names ||= []).push(v.name||'photo'); }
-      else if (k==='availability_days'){ (obj.availability_days ||= []).push(v); }
+      else if (k==='photos_data_json'){ try{ obj.photos_data = JSON.parse(v||'[]'); }catch{ obj.photos_data=[]; } }
       else if (v instanceof File){ obj[`${k}_name`]= v.name||'upload'; }
-      else {
-        if (k==='portfolio_names'){ try{ obj.portfolio_names=JSON.parse(v); }catch{ obj.portfolio_names=[]; } }
-        else if (k==='amenities' || k==='utilities'){ (obj[k] ||= []).push(v); }
-        else obj[k]=v;
-      }
+      else obj[k]=v;
     }
     if (photos.length) obj.photos=photos;
     return this.post(path,obj);
   }
 };
 
-/* -----------------
-   DOMContentLoaded
--------------------*/
-window.addEventListener('DOMContentLoaded', async () => {
+// ===== Helpers =====
+function isMainAdmin(u){ if(!u) return false; return (ADMIN_EMAILS||[]).map(x=>x.toLowerCase()).includes(String(u.email||'').toLowerCase()); }
+function isAdminOrLimited(u){ if(!u) return false; return isMainAdmin(u) || u.limitedAdminStatus==='approved'; }
+function trialActive(p){ if(!p?.boost_trial_start) return false; return (Date.now()-Number(p.boost_trial_start)) < 14*24*3600*1000; }
+function addTransaction({userId,type,amount_nle=0,meta={}}){
+  const d=DB.data; d.transactions ||= [];
+  d.transactions.push({id:uid(),userId,type,amount_nle,meta,ts:Date.now()});
+  DB.data=d;
+}
+function getUserById(id){ return (DB.data.users||[]).find(u=>u.id===id)||null; }
+
+// ===== Auth UI (header mini) =====
+function renderAuth(){
+  const me = API._requireUser();
+  if (me) { $('#accountBtn')?.style && ($('#accountBtn').style.display=''); }
+  else { $('#accountBtn')?.style && ($('#accountBtn').style.display='none'); }
+  toggleAdminLink();
+}
+function toggleAdminLink(){
+  const me = API._requireUser();
+  const settingsLink      = $('#settingsLink');
+  const adminLink         = $('#adminLink');
+  const quotesLink        = $('#quotesLink');
+  const adCampLink        = $('#adCampLink');
+  const adminAppAdsLink   = $('#adminAppAdsLink');
+
+  if (settingsLink)    settingsLink.style.display   = isAdminOrLimited(me) ? '' : 'none';
+  if (adminLink)       adminLink.style.display      = isMainAdmin(me) ? '' : 'none';
+  if (quotesLink)      quotesLink.style.display     = isAdminOrLimited(me) ? '' : 'none';
+  if (adCampLink)      adCampLink.style.display     = (isAdminOrLimited(me)) ? '' : 'none';
+  if (adminAppAdsLink) adminAppAdsLink.style.display= isMainAdmin(me) ? '' : 'none';
+}
+
+// ===== Auth Gate (full-screen) =====
+function showAuthGate(on){ const g=$('#authGate'); if(g) g.style.display = on?'block':'none'; }
+function setStep(id){ $$('.step',$('#authGate')).forEach(s=>s.classList.remove('active')); $('#'+id)?.classList.add('active'); }
+function wireAuthGate(){
+  const g=$('#authGate'); if(!g) return;
+  $('#chooseLogin').onclick = ()=> setStep('stepLogin');
+  $('#chooseSignup').onclick = ()=> setStep('stepSignup1');
+  $('#toSignup').onclick = (e)=>{e.preventDefault(); setStep('stepSignup1');};
+  $('#toLogin').onclick = (e)=>{e.preventDefault(); setStep('stepLogin');};
+  $('#doLogin').onclick = async()=>{
+    const email=$('#loginEmail').value.trim(), password=$('#loginPass').value;
+    const r=await API.post('/api/auth/login',{email,password});
+    if(r.token){ API.setToken(r.token); showAuthGate(false); route(); } else alert(r.error||'Login failed');
+  };
+  $('#sendCode').onclick = async()=>{
+    const email=$('#signEmail').value.trim(); if(!email) return alert('Enter email');
+    const r=await API.post('/api/auth/send-code',{email});
+    if(r.error) alert(r.error); else setStep('stepSignup2');
+  };
+  $('#doVerify').onclick = async()=>{
+    const email=$('#signEmail').value.trim(), password=$('#signPass').value, code=$('#signCode').value.trim();
+    const r=await API.post('/api/auth/verify-signup',{email,password,code});
+    if(r.token){ API.setToken(r.token); showAuthGate(false); route(); } else alert(r.error||'Signup failed');
+  };
+  if (GOOGLE_OAUTH_CLIENT_ID && window.google?.accounts?.id){
+    window.google.accounts.id.renderButton($('#googleBtnGate'), { theme:'outline', size:'large', type:'standard', shape:'pill' });
+    window.google.accounts.id.initialize({
+      client_id: GOOGLE_OAUTH_CLIENT_ID,
+      callback: async (resp)=>{
+        const r = await API.post('/api/auth/google-id-token', { id_token: resp.credential });
+        if (r.token){ API.setToken(r.token); showAuthGate(false); route(); } else alert(r.error||'Google sign-in failed');
+      }
+    });
+  } else {
+    $('#googleBtnGate').innerHTML = `<button class="btn">Continue with Google</button>`;
+    $('#googleBtnGate button').onclick = ()=> alert('Add GOOGLE_OAUTH_CLIENT_ID in env.json');
+  }
+}
+
+// ===== Header hero rotator (tiny) =====
+function setHeroVisible(on){ const h=$('#heroSection'); if(h) h.style.display = on?'block':'none'; }
+function mountHero(){
+  const host=$('#heroRotator'); if(!host) return;
+  host.innerHTML = `
+    <a class="hero-slide active" id="hs1" href="#/services">
+      <div class="floaty" style="display:grid;place-items:center;background:#fff;border-radius:10px;margin-left:6px"><span>🧰</span></div>
+      <div><strong>Let us handle service needs</strong><br/><span class="muted">Find pros near you</span></div>
+    </a>
+    <a class="hero-slide" id="hs2" href="#/post/goods">
+      <div class="floaty" style="display:grid;place-items:center;background:#fff;border-radius:10px;margin-left:6px"><span>🚀</span></div>
+      <div><strong>Be first to see new items</strong><br/><span class="muted">Boost — try free</span></div>
+    </a>
+  `;
+  let i=0; setInterval(()=>{ i^=1; $('#hs1').classList.toggle('active', !i); $('#hs2').classList.toggle('active', !!i); }, 60000);
+}
+
+// ===== Location + filters =====
+function setMyLoc(lat,lng){ localStorage.setItem('sl_my_loc', JSON.stringify({lat,lng})); }
+function getMyLoc(){ try{ return JSON.parse(localStorage.getItem('sl_my_loc')||'{}'); }catch{return {}} }
+function haversineMiles(a,b){
+  if(!a||!b||a.lat==null||b.lat==null) return Infinity;
+  const R=3958.8, toRad=x=>x*Math.PI/180;
+  const dLat=toRad((b.lat-a.lat)), dLon=toRad((b.lng-a.lng));
+  const la=toRad(a.lat), lb=toRad(b.lat);
+  const h = Math.sin(dLat/2)**2 + Math.cos(la)*Math.cos(lb)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+function renderGoodsFilterBar(container, onChange){
+  const bar=document.createElement('div'); bar.className='filterbar';
+  bar.innerHTML = `
+    <label>Range
+      <select id="fMiles">
+        <option value="0">Any</option>
+        <option>5</option><option>10</option><option>15</option><option>20</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="fBoosted"/> Sellers with boosting</label>
+    <button class="btn" id="fUseLoc">Use my location</button>
+    <button class="btn" id="fApply">Apply</button>
+  `;
+  container.parentNode.insertBefore(bar, container);
+  $('#fUseLoc',bar).onclick = ()=>{
+    if(!navigator.geolocation){ alert('Geolocation not supported'); return; }
+    navigator.geolocation.getCurrentPosition(pos=>{ setMyLoc(pos.coords.latitude,pos.coords.longitude); alert('Location set.'); }, ()=>alert('Could not get location'));
+  };
+  $('#fApply',bar).onclick = ()=> onChange({
+    miles: Number($('#fMiles',bar).value||0),
+    boostedOnly: $('#fBoosted',bar).checked,
+    myloc: getMyLoc()
+  });
+}
+
+// ===== Google Maps (optional) =====
+let _mapsLoaded=false,_mapsPromise=null;
+function ensureGoogleMaps(){
+  if (!GOOGLE_MAPS_API_KEY) return Promise.resolve(null);
+  if (_mapsLoaded) return Promise.resolve(window.google.maps);
+  if (_mapsPromise) return _mapsPromise;
+  _mapsPromise = new Promise((res)=>{
+    const s=document.createElement('script');
+    s.src=`https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}`;
+    s.onload=()=>{ _mapsLoaded=true; res(window.google.maps); };
+    document.head.appendChild(s);
+  });
+  return _mapsPromise;
+}
+
+// ===== UI helpers =====
+const app = $('#app');
+function renderBackBtn(show){
+  if (show && !$('#backBtn')){
+    const b=document.createElement('button'); b.id='backBtn'; b.textContent='Back'; b.onclick=()=>history.back();
+    app.before(b);
+  }
+  if (!show && $('#backBtn')) $('#backBtn').remove();
+}
+const card = (t,d,badge)=>{ const div=document.createElement('div'); div.className='card'; div.innerHTML=`<span class="badge">${badge||''}</span><h3>${t}</h3><p class="muted">${d||''}</p>`; return div; };
+
+// ===== Goods feed thumbnails =====
+function renderGoodsThumb(p, grid){
+  const div=document.createElement('div'); div.className='goods-card';
+  const src=(p.photos_data&&p.photos_data[0])?p.photos_data[0]:'';
+  div.innerHTML = `
+    <a href="#/item/${p.id}" style="display:block">
+      <img alt="${p.title||'item'}" ${src?`src="${src}"`:''}/>
+    </a>
+    <div class="meta"><h4>${p.title||''}</h4><p>${p.description||''}</p></div>
+  `;
+  grid.appendChild(div);
+}
+
+// ===== Item page =====
+function daysSince(ts){ const d=ts?new Date(ts):new Date(); return Math.max(0, Math.floor((Date.now()-d.getTime())/(24*3600*1000))); }
+function daysSinceJoined(u){ return daysSince(u?.createdAt || Date.now()); }
+async function viewItem(itemId){
+  renderBackBtn(true); setHeroVisible(false);
+  const d=DB.data; const p=(d.posts||[]).find(x=>x.id===itemId); if(!p){ app.innerHTML='<p>Item not found.</p>'; return; }
+  const owner=getUserById(p.userId)||{email:'unknown'};
+  const src=(p.photos_data&&p.photos_data[0])?p.photos_data[0]:'';
+  app.innerHTML = `
+    <div class="item-hero" id="itemHero">
+      <img ${src?`src="${src}"`:''} alt="${p.title||'item'}"/>
+      <div class="topbar">
+        <a href="javascript:history.back()" class="chip btn">Back</a>
+        <div>
+          <button id="shareTop" class="chip btn">Share</button>
+          <button id="saveTop"  class="chip btn">${isSaved(p.id)?'Saved':'Save'}</button>
+        </div>
+      </div>
+    </div>
+    <section style="padding:10px 0 64px">
+      <h2>${p.title||''}</h2>
+      <p class="muted" style="margin-top:-6px">${p.category||''} • Posted ${daysSince(p.createdAt)} day(s) ago</p>
+      <div class="card">
+        <p><strong>Seller:</strong> ${owner.email||''} • joined ${daysSinceJoined(owner)} day(s) ago</p>
+        ${p.location_address?`<p class="muted">📍 ${p.location_address}</p>`:''}
+        ${p.description?`<p>${p.description}</p>`:''}
+        ${(p.brand||p.item_type||p.color||p.condition)?`<p class="muted">${[p.brand,p.item_type,p.color,p.condition].filter(Boolean).join(' • ')}</p>`:''}
+        <p class="muted">Status: ${p.status||'available'}</p>
+        <p class="muted"><a href="#/post/goods" style="text-decoration:underline">get faster responses — Boost</a></p>
+      </div>
+      <div id="mapWrap" style="margin-top:10px"></div>
+    </section>
+    <div id="fixedBuyBar" style="position:fixed;left:0;right:0;bottom:60px;padding:6px 8px;display:flex;gap:6px;justify-content:space-around;background:linear-gradient(180deg,#fff8ec,#fff3db);border-top:1px solid var(--border)">
+      <button class="btn" id="askBtn">Ask</button>
+      <button class="btn" id="offerBtn">Make Offer</button>
+      <button class="btn" id="buyBtn">Buy Now</button>
+    </div>
+  `;
+  const hero=$('#itemHero'); window.addEventListener('scroll', ()=>{ hero.classList.toggle('hidden', window.scrollY>80); }, {passive:true});
+  $('#shareTop').onclick = async()=>{
+    const url=`${location.origin}${location.pathname}#/item/${p.id}`;
+    try{ if(navigator.share) await navigator.share({title:p.title||'Listing', url}); else { await navigator.clipboard.writeText(url); alert('Link copied'); } }catch{}
+  };
+  $('#saveTop').onclick = async()=>{ const r=await API.post('/api/saved/toggle',{postId:p.id}); if(r.error) alert(r.error); else $('#saveTop').textContent=r.saved?'Saved':'Save'; };
+  $('#askBtn').onclick   = ()=> messageOwner(p, `Hi! Is "${p.title}" still available?`);
+  $('#offerBtn').onclick = ()=>{ const amount=prompt('Your offer (NLe):'); if(amount==null||!String(amount).trim()) return; const note=prompt('Add a note (optional):')||''; messageOwner(p, `Offer for "${p.title}": NLe ${String(amount).trim()}${note?` — ${note}`:''}`); };
+  $('#buyBtn').onclick = ()=>{
+    const sheet=document.createElement('div');
+    sheet.style='position:fixed;inset:0;background:#0007;display:flex;align-items:flex-end;z-index:9999';
+    const box=document.createElement('div');
+    box.style='background:#fff;border-radius:16px 16px 0 0;padding:12px;width:100%;max-width:520px;margin:0 auto';
+    box.innerHTML = `
+      <h3 style="margin:0 0 8px 0">Buy Now — Mobile Money</h3>
+      <p class="muted">Upload payment screenshot (NLe)</p>
+      <div class="row"><div><label>Screenshot <input id="buyShot" type="file" accept="image/*"></label></div></div>
+      <div id="buyMap" style="height:220px;margin-top:8px;border:1px solid #e5e7eb;border-radius:10px;${(p.location_lat&&p.location_lng)?'':'display:none'}"></div>
+      <p class="muted" style="margin-top:6px"><a href="#/post/goods" style="text-decoration:underline">get faster responses — Boost</a></p>
+      <div class="actions" style="margin-top:8px">
+        <button class="btn" id="buySubmit">Submit</button>
+        <button class="btn" id="buyCancel" style="background:#f3f4f6;border-color:#e5e7eb">Cancel</button>
+      </div>`;
+    sheet.appendChild(box); document.body.appendChild(sheet);
+    $('#buyCancel').onclick = ()=> sheet.remove();
+    $('#buySubmit').onclick = ()=>{
+      const f=$('#buyShot').files?.[0]; if(!f){ alert('Screenshot required'); return; }
+      addTransaction({userId:API._requireUser().id,type:'buy_screenshot',amount_nle:0,meta:{postId:p.id,screenshot:f.name||'screenshot'}});
+      alert('Thanks! Admin will verify your payment screenshot.'); sheet.remove();
+    };
+    (async()=>{
+      if (p.location_lat!=null && p.location_lng!=null){
+        const g=await ensureGoogleMaps(); if(!g) return;
+        const map=new g.Map($('#buyMap'), {center:{lat:p.location_lat,lng:p.location_lng}, zoom:14});
+        new g.Marker({map, position:{lat:p.location_lat,lng:p.location_lng}});
+      }
+    })();
+  };
+  if (p.location_lat!=null && p.location_lng!=null){
+    const g=await ensureGoogleMaps(); if(g){
+      const div=document.createElement('div'); div.style='height:220px;border:1px solid #e5e7eb;border-radius:10px';
+      $('#mapWrap').appendChild(div);
+      const map=new g.Map(div,{center:{lat:p.location_lat,lng:p.location_lng},zoom:14});
+      new g.Marker({map, position:{lat:p.location_lat,lng:p.location_lng}});
+    }
+  }
+}
+function isSaved(postId){ const me=API._requireUser(); if(!me) return false; return (DB.data.saved||[]).some(s=>s.userId===me.id && s.postId===postId); }
+function messageOwner(p, text){ alert('Message sent to owner:\n\n'+text); }
+
+// ===== Post forms =====
+function openQuickPostChooser(){
+  const sheet=document.createElement('div');
+  sheet.style='position:fixed;inset:0;background:#0007;display:flex;align-items:flex-end;z-index:9999';
+  const box=document.createElement('div');
+  box.style='background:#fff;border-radius:16px 16px 0 0;padding:12px;width:100%;max-width:520px;margin:0 auto';
+  box.innerHTML=`
+    <h3 style="margin:0 0 8px 0">Create a post</h3>
+    <div class="actions">
+      <a class="btn" href="#/post/goods">Goods</a>
+      <a class="btn" href="#/post/services">Services</a>
+      <a class="btn" href="#/post/rentals">Rentals</a>
+      <a class="btn" href="#/post/jobs">Jobs</a>
+    </div>
+    <div class="actions" style="margin-top:8px">
+      <button class="btn" id="qpClose" style="background:#f3f4f6;border-color:#e5e7eb">Close</button>
+    </div>`;
+  sheet.appendChild(box); document.body.appendChild(sheet);
+  $('#qpClose').onclick = ()=> sheet.remove();
+}
+
+function boostBlock(){ return `
+  <div class="card">
+    <h3>Boost (optional) — NLe</h3>
+    <div class="row">
+      <div><label>Months (0–12) <input name="boosted_months" id="boostMonths" type="number" min="0" max="12" value="0"></label></div>
+      <div><label>Contact phone (for admin verify) <input name="boost_contact_phone" placeholder="+232 ..."></label></div>
+    </div>
+    <div id="boostPriceLine" class="muted">NLe 100 per month · Est. total: <strong>NLe 0</strong></div>
+    <div id="mmPayBlock" style="display:none;margin-top:8px"><label>Mobile-money payment screenshot <input id="paymentScreenshot" name="payment_screenshot" type="file" accept="image/*"></label></div>
+    <small class="muted">14-day free trial applies when months = 0 (not for Ads).</small>
+  </div>`; }
+
+function postForm(category){
+  const wrap=document.createElement('div');
+  const title=`Post ${category.charAt(0).toUpperCase()+category.slice(1)}`;
+  wrap.innerHTML = `
+    <h2>${title}</h2>
+    <form id="pform">
+      <div class="row">
+        <div><label>Title<input name="title" required></label></div>
+        <div><label>Price (¢)<input name="price_cents" type="number" min="0"></label></div>
+      </div>
+      <label>Description<textarea name="description"></textarea></label>
+
+      ${category==='services' ? `
+        <div class="row">
+          <div><label>Category
+            <select name="service_parent">
+              <option>Personal Chef</option><option>Plumber</option><option>Contractor</option>
+              <option>Interior Decoration</option><option>AC Specialist</option><option>TV Repairer</option>
+              <option>Furniture Assembly</option><option>House Cleaning</option><option>Painting</option><option>Other</option>
+            </select>
+          </label></div>
+        </div>` : ''}
+
+      <div class="card">
+        <h3>Photos</h3>
+        <div class="row">
+          <div><label>Select photos <input id="postSel" type="file" accept="image/*" multiple></label></div>
+          <div><label>Take photos <input id="postCam" type="file" accept="image/*" capture="environment" multiple></label></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Location</h3>
+        <div class="row">
+          <div><label>Address <input name="location_address" placeholder="Freetown…"></label></div>
+          <div><label>Latitude <input name="location_lat"  type="number" step="any"></label></div>
+          <div><label>Longitude<input name="location_lng"  type="number" step="any"></label></div>
+        </div>
+        <div class="actions"><button type="button" class="btn" id="useMyLoc">Use my location</button></div>
+      </div>
+
+      ${boostBlock()}
+
+      <div class="actions" style="margin-top:8px">
+        <button class="btn" type="submit">Publish</button>
+      </div>
+    </form>
+  `;
+  $('#app').innerHTML=''; app.appendChild(wrap);
+
+  const f=$('#pform');
+  const updateBoostUI=()=>{
+    const months=Math.max(0, Number($('#boostMonths').value||0));
+    $('#boostPriceLine').innerHTML = `NLe 100 per month · Est. total: <strong>NLe ${months*100}</strong>`;
+    $('#mmPayBlock').style.display = months>0 ? 'block':'none';
+  };
+  $('#boostMonths').oninput = updateBoostUI; updateBoostUI();
+
+  $('#useMyLoc').onclick = ()=>{
+    if(!navigator.geolocation) return alert('Geolocation not supported');
+    navigator.geolocation.getCurrentPosition(pos=>{
+      f.location_lat.value=pos.coords.latitude; f.location_lng.value=pos.coords.longitude; setMyLoc(pos.coords.latitude,pos.coords.longitude);
+    }, ()=>alert('Could not get location'));
+  };
+
+  f.addEventListener('submit', async(e)=>{
+    e.preventDefault();
+    const me=API._requireUser(); if(!me){ showAuthGate(true); return; }
+
+    // Collect selected images → data URLs
+    const files=[];
+    ['postSel','postCam'].forEach(id=>{
+      const inp=$('#'+id); if(inp?.files) for(const file of inp.files){ if(file && file.type.startsWith('image/')) files.push(file); }
+    });
+    const toDataURL=(file)=> new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
+    const photos_data=[]; for(const fl of files.slice(0,8)){ try{ photos_data.push(await toDataURL(fl)); }catch{} }
+
+    const fd=new FormData(f);
+    fd.append('category', category);
+    fd.append('photos_data_json', JSON.stringify(photos_data));
+    const pay=$('#paymentScreenshot'); if (pay?.files?.[0]) fd.append('payment_screenshot', pay.files[0]);
+    const r=await API.postForm('/api/posts', fd);
+    if(r.error){ alert(r.error); return; }
+    alert('Published!'); location.hash = `#/${category}`;
+  });
+}
+
+// ===== Views =====
+async function viewHome(){
+  renderBackBtn(false); setHeroVisible(true);
+  app.innerHTML = `<h2>Home · Goods Feed</h2><div class="goods-grid" id="ggrid"></div>`;
+  const g=$('#ggrid');
+  renderGoodsFilterBar(g, applyGoodsFilter);
+  const posts = await API.get('/api/posts?category=goods');
+  g.dataset.all = JSON.stringify(posts);
+  applyGoodsFilter();
+
+  function applyGoodsFilter(opts){
+    const all = JSON.parse(g.dataset.all||'[]');
+    let list = all.slice();
+    if (opts?.boostedOnly) list = list.filter(p=> (p.boosted_months||0)>0 || trialActive(p));
+    if (opts?.miles>0){
+      const here = opts.myloc||getMyLoc();
+      list = list.filter(p=> haversineMiles(here,{lat:p.location_lat,lng:p.location_lng}) <= opts.miles);
+    }
+    g.innerHTML=''; list.sort((a,b)=> (Number(b.boosted_months||0)+ (trialActive(b)?1:0)) - (Number(a.boosted_months||0)+(trialActive(a)?1:0)) || b.createdAt-a.createdAt);
+    list.forEach(p=> renderGoodsThumb(p,g));
+  }
+}
+
+async function viewCategory(category){
+  renderBackBtn(true); setHeroVisible(category==='goods');
+  if (category==='goods'){
+    app.innerHTML = `<h2>Goods Feed</h2><div class="goods-grid" id="ggrid"></div>`;
+    const g=$('#ggrid'); renderGoodsFilterBar(g, applyGoodsFilter);
+    const posts = await API.get('/api/posts?category=goods'); g.dataset.all = JSON.stringify(posts); applyGoodsFilter();
+    function applyGoodsFilter(opts){
+      const all = JSON.parse(g.dataset.all||'[]');
+      let list = all.slice();
+      if (opts?.boostedOnly) list = list.filter(p=> (p.boosted_months||0)>0 || trialActive(p));
+      if (opts?.miles>0){ const here=opts.myloc||getMyLoc(); list=list.filter(p=> haversineMiles(here,{lat:p.location_lat,lng:p.location_lng})<=opts.miles); }
+      g.innerHTML=''; list.sort((a,b)=> (Number(b.boosted_months||0)+(trialActive(b)?1:0)) - (Number(a.boosted_months||0)+(trialActive(a)?1:0)) || b.createdAt-a.createdAt);
+      list.forEach(p=> renderGoodsThumb(p,g));
+    }
+    return;
+  }
+
+  if (category==='services'){
+    const CATS=[
+      {k:'Personal Chef',icon:'M3 14l3-3 4 4 8-8 3 3-11 11z'},
+      {k:'Plumber',icon:'M4 7h16v2H4z'},
+      {k:'Contractor',icon:'M12 3l9 8h-3v9H6v-9H3z'},
+      {k:'Interior Decoration',icon:'M6 2h12v2H6z'},
+      {k:'AC Specialist',icon:'M3 5h18v4H3z'},
+      {k:'TV Repairer',icon:'M5 6h14v10H5z'},
+      {k:'Furniture Assembly',icon:'M4 12h16v2H4z'},
+      {k:'House Cleaning',icon:'M2 14h20v2H2z'},
+      {k:'Painting',icon:'M4 4h8v4H4z'},
+      {k:'Other',icon:'M2 2h20v2H2z'}
+    ];
+    app.innerHTML = `<h2>Services</h2><div class="boxgrid" id="svcCats"></div><div class="grid" id="grid"></div>`;
+    const box=$('#svcCats'), grid=$('#grid');
+    CATS.forEach(c=>{ const div=document.createElement('div'); div.className='catbox'; div.innerHTML=`<svg viewBox="0 0 24 24"><path d="${c.icon}" fill="#b1840f"/></svg><span>${c.k}</span>`; div.onclick=()=>filterBy(c.k); box.appendChild(div); });
+    const posts = await API.get('/api/posts?category=services');
+    function render(list){ grid.innerHTML=''; list.sort((a,b)=>b.createdAt-a.createdAt); list.forEach(p=> grid.appendChild(card(p.title,p.description, (p.boosted_months>0||trialActive(p))?'Boosted':''))); }
+    function filterBy(k){ render(posts.filter(p=> (p.service_parent||'')===k)); }
+    render(posts); return;
+  }
+
+  if (['rentals','jobs','ads'].includes(category)){
+    const posts = await API.get('/api/posts?category='+category);
+    app.innerHTML = `<h2>${category.charAt(0).toUpperCase()+category.slice(1)}</h2><div class="grid" id="grid"></div>`;
+    const grid=$('#grid');
+    posts.sort((a,b)=>b.createdAt-a.createdAt).forEach(p=> grid.appendChild(card(p.title,p.description, (p.boosted_months>0||trialActive(p))?'Boosted':'')));
+    return;
+  }
+}
+
+function viewSearch(q){
+  renderBackBtn(true); setHeroVisible(false);
+  const all = DB.data.posts||[];
+  const term=(q||'').toLowerCase();
+  const res = all.filter(p=> [p.title,p.description,p.category].join(' ').toLowerCase().includes(term));
+  app.innerHTML = `<h2>Search</h2><div class="grid" id="grid"></div>`;
+  const grid=$('#grid'); res.sort((a,b)=>b.createdAt-a.createdAt).forEach(p=> grid.appendChild(card(p.title,p.description,p.category)));
+}
+
+function viewPost(category){ renderBackBtn(true); setHeroVisible(false); postForm(category); }
+
+function viewListings(){
+  renderBackBtn(true); setHeroVisible(false);
+  const me=API._requireUser(); if(!me){ showAuthGate(true); return; }
+  const mine=(DB.data.posts||[]).filter(p=> p.userId===me.id).sort((a,b)=>b.createdAt-a.createdAt);
+  app.innerHTML = `<h2>Your Listings</h2><div class="goods-grid" id="ggrid"></div>`;
+  const g=$('#ggrid'); mine.forEach(p=> renderGoodsThumb(p,g));
+}
+function viewInbox(){ renderBackBtn(true); setHeroVisible(false); app.innerHTML=`<h2>Inbox</h2><p class="muted">Coming soon.</p>`; }
+
+function viewAccount(){
+  renderBackBtn(true); setHeroVisible(false);
+  const me=API._requireUser(); if(!me){ showAuthGate(true); return; }
+  const d=DB.data;
+  const savedIds=(d.saved||[]).filter(s=>s.userId===me.id).map(s=>s.postId);
+  const savedGoods=(d.posts||[]).filter(p=> savedIds.includes(p.id) && p.category==='goods');
+  const savedRentals=(d.posts||[]).filter(p=> savedIds.includes(p.id) && p.category==='rentals');
+  const mine=(d.posts||[]).filter(p=> p.userId===me.id);
+  const tx=(d.transactions||[]).filter(t=> t.userId===me.id).sort((a,b)=>b.ts-a.ts);
+
+  app.innerHTML = `
+    <section>
+      <h2>Account</h2>
+      <div class="card">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <img id="avatarImg" class="avatar" src="${me.profile_photo_data||''}" alt="Profile"/>
+          <div>
+            <div><strong>${me.email||''}</strong></div>
+            <div class="muted">Joined ${daysSince(me.createdAt)} day(s) ago</div>
+          </div>
+        </div>
+        <div class="actions" style="margin-top:8px">
+          <button class="btn" id="avatarTake">Take photo</button>
+          <button class="btn" id="avatarPick">Select photo</button>
+          <button class="btn" id="logoutBtn">Logout</button>
+        </div>
+        <input type="file" id="avatarFile" accept="image/*" style="display:none"/>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <h3>Security</h3>
+        <div class="row">
+          <div>
+            <h4 style="margin:0 0 6px 0">Change password</h4>
+            <label>Old password <input id="oldPass" type="password"/></label>
+            <label>New password <input id="newPass" type="password"/></label>
+            <div class="actions"><button class="btn" id="doChangePass">Change</button></div>
+          </div>
+          <div>
+            <h4 style="margin:0 0 6px 0">Forgot password</h4>
+            <label>Email <input id="fpEmail" placeholder="you@example.com" value="${me.email||''}"/></label>
+            <div class="actions"><button class="btn" id="fpSend">Send reset code</button></div>
+            <label>Code <input id="fpCode" placeholder="6-digit"/></label>
+            <label>New password <input id="fpNew" type="password"/></label>
+            <div class="actions"><button class="btn" id="fpVerify">Verify & Reset</button></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <h3>Boost a listing (NLe)</h3>
+        <div class="row">
+          <div><label>Your listing
+            <select id="boostPostSel">
+              ${mine.map(p=>`<option value="${p.id}">${p.title} — ${p.category} (${p.boosted_months||0}m)</option>`).join('')}
+            </select></label></div>
+          <div><label>Months (1–12) <input id="boostMonthsAcc" type="number" min="1" max="12" value="1"></label></div>
+          <div><label>Payment screenshot <input id="boostShotAcc" type="file" accept="image/*"></label></div>
+        </div>
+        <div class="actions"><button class="btn" id="boostApplyAcc">Apply Boost</button></div>
+        <small class="muted">NLe 100 per month. Screenshot is required.</small>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <h3>Saved — Goods</h3>
+        <div class="goods-grid" id="savedGoodsGrid"></div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <h3>Saved — Rentals</h3>
+        <div class="goods-grid" id="savedRentalsGrid"></div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <h3>Your Listings</h3>
+        <div class="goods-grid" id="mineGrid"></div>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <h3>Transactions</h3>
+        <table><thead><tr><th>When</th><th>Type</th><th>Amount</th><th>Meta</th></tr></thead>
+        <tbody id="txBody"></tbody></table>
+      </div>
+    </section>
+  `;
+
+  // Avatar handlers
+  const fileInput=$('#avatarFile');
+  const toDataURL=(f)=> new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(f); });
+  $('#avatarPick').onclick = ()=> fileInput.click();
+  $('#avatarTake').onclick = ()=>{ fileInput.setAttribute('capture','user'); fileInput.click(); fileInput.removeAttribute('capture'); };
+  fileInput.onchange = async()=>{ const f=fileInput.files?.[0]; if(!f) return;
+    const data=await toDataURL(f); const d=DB.data; const u=d.users.find(x=>x.id===me.id); u.profile_photo_data=data; DB.data=d; $('#avatarImg').src=data; alert('Profile photo updated.');
+  };
+
+  // Security
+  $('#logoutBtn').onclick = ()=>{ API.setToken(null); location.reload(); };
+  $('#doChangePass').onclick = async()=>{
+    const r=await API.post('/api/auth/change-password',{oldPass:$('#oldPass').value,newPass:$('#newPass').value});
+    if(r.error) alert(r.error); else alert('Password changed.');
+  };
+  $('#fpSend').onclick = async()=>{ const r=await API.post('/api/auth/forgot/send',{email:$('#fpEmail').value}); if(r.error) alert(r.error); else alert('Reset code sent (demo shows in alert).'); };
+  $('#fpVerify').onclick = async()=>{ const r=await API.post('/api/auth/forgot/verify',{email:$('#fpEmail').value,code:$('#fpCode').value,newPass:$('#fpNew').value}); if(r.error) alert(r.error); else alert('Password reset.'); };
+
+  // Boost
+  $('#boostApplyAcc').onclick = async()=>{
+    const pid=$('#boostPostSel').value; const m=Math.max(1, Number($('#boostMonthsAcc').value||1));
+    const f=$('#boostShotAcc').files?.[0]; if(!f){ alert('Screenshot required'); return; }
+    const r=await API.post('/api/posts/boost',{postId:pid,months:m,payment_screenshot_name:f.name||'screenshot'});
+    if(r.error){ alert(r.error); return; }
+    alert('Boost applied.'); route();
+  };
+
+  // Grids
+  const sG=$('#savedGoodsGrid'), sR=$('#savedRentalsGrid'), mG=$('#mineGrid');
+  savedGoods.forEach(p=> renderGoodsThumb(p, sG));
+  savedRentals.forEach(p=> renderGoodsThumb(p, sR));
+  mine.forEach(p=> renderGoodsThumb(p, mG));
+
+  // Transactions
+  const tb=$('#txBody'); tb.innerHTML = tx.map(t=>{
+    const when=new Date(t.ts).toLocaleString();
+    const meta=Object.entries(t.meta||{}).map(([k,v])=>`${k}:${v}`).join(', ');
+    return `<tr><td>${when}</td><td>${t.type}</td><td>${t.amount_nle?`NLe ${t.amount_nle}`:'—'}</td><td class="muted">${meta}</td></tr>`;
+  }).join('') || `<tr><td colspan="4" class="muted">No transactions yet.</td></tr>`;
+}
+
+// ===== Settings (admin / limited-admin) =====
+function adminPanelAuthorized(){ const me=API._requireUser(); if(!me) return false; return sessionStorage.getItem('sl_admin_ok_'+me.id)==='1'; }
+async function ensureAdminPanelAuth(){
+  const me=API._requireUser(); if(!me) return false;
+  if (!isAdminOrLimited(me)) return false;
+  if (adminPanelAuthorized()) return true;
+  const pwd=prompt('Enter admin panel password:'); if(!pwd) return false;
+  if (pwd===ADMIN_PANEL_PASSWORD){ sessionStorage.setItem('sl_admin_ok_'+me.id,'1'); return true; }
+  alert('Incorrect admin panel password.'); return false;
+}
+async function viewSettings(){
+  renderBackBtn(true); setHeroVisible(false);
+  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
+  if (!isAdminOrLimited(me)){ app.innerHTML='<p>Restricted.</p>'; return; }
+  const ok=await ensureAdminPanelAuth(); if(!ok){ app.innerHTML='<p>Admin password required.</p>'; return; }
+  if (isMainAdmin(me)) return renderSettingsAdmin(); return renderSettingsLimited();
+}
+function renderSettingsLimited(){
+  const d=DB.data;
+  const boosted=(d.posts||[]).filter(p=> (Number(p.boosted_months||0)>0) || trialActive(p));
+  const txByUser={}; (d.transactions||[]).forEach(t=>{ (txByUser[t.userId] ||= []).push(t); });
+  app.innerHTML = `
+    <section>
+      <h2>Settings (Limited Admin)</h2>
+      <div class="card">
+        <h3>Boosted Users & Contacts</h3>
+        <table><thead><tr><th>Listing</th><th>Owner</th><th>Boost</th><th>Contact phone</th><th>Transactions</th></tr></thead>
+        <tbody id="limRows"></tbody></table>
+      </div>
+    </section>`;
+  const tb=$('#limRows'); tb.innerHTML = boosted.map(p=>{
+    const u=getUserById(p.userId)||{}; const tx=(txByUser[p.userId]||[]).map(x=>`<div>${new Date(x.ts).toLocaleDateString()} — ${x.type} — ${x.amount_nle?('NLe '+x.amount_nle):'—'}</div>`).join('')||'<span class="muted">None</span>';
+    return `<tr><td><a href="#/item/${p.id}">${p.title||'—'}</a> <small class="muted">(${p.category})</small></td><td>${u.email||'—'}</td><td>${Number(p.boosted_months||0)} m ${trialActive(p)?' + trial':''}</td><td>${(p.boost_contact_phone||'').trim()||'—'}</td><td>${tx}</td></tr>`;
+  }).join('') || `<tr><td colspan="5" class="muted">No boosted users yet.</td></tr>`;
+}
+function renderSettingsAdmin(){
+  const d=DB.data;
+  const pending=d.users.filter(u=>u.limitedAdminStatus==='pending');
+  const approved=d.users.filter(u=>u.limitedAdminStatus==='approved');
+  app.innerHTML = `
+    <section>
+      <h2>Settings (Main Admin)</h2>
+      <div class="card">
+        <h3>Limited Admin Management</h3>
+        <h4 style="margin:6px 0">Pending</h4>
+        <div id="laPending">${pending.length?'':''}</div>
+        <h4 style="margin:12px 0 6px 0">Approved</h4>
+        <div id="laApproved">${approved.length?'':''}</div>
+      </div>
+      <div class="card" style="margin-top:10px">
+        <h3>Ads & Bloggers</h3>
+        <div class="actions" style="margin-bottom:8px">
+          <a class="btn" href="#/admin">Open Blogger Approvals</a>
+          <a class="btn" href="#/ads/campaigns">Open Campaigns</a>
+          <a class="btn" href="#/admin/app-ads">Send App Ads</a>
+        </div>
+        <p class="muted">Use these panels to approve bloggers, verify/assign campaigns, and broadcast in-app ads.</p>
+      </div>
+    </section>`;
+  const mkRow=(u,kind)=>{
+    const row=document.createElement('div'); row.style='display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap';
+    row.innerHTML = `<span>${u.email}</span>`+
+      (kind==='pending'
+        ? ` <button class="btn ap">Approve</button> <button class="btn rej" style="background:#eee;border-color:#ddd">Reject</button>`
+        : ` <button class="btn rm"  style="background:#eee;border-color:#ddd">Remove</button>`);
+    if (kind==='pending'){
+      row.querySelector('.ap').onclick=async()=>{ const r=await API.post('/api/admin/users/set-limited',{userId:u.id,status:'approved'}); if(r.error) return alert(r.error); alert('Approved'); renderSettingsAdmin(); };
+      row.querySelector('.rej').onclick=async()=>{ const r=await API.post('/api/admin/users/set-limited',{userId:u.id,status:'none'});     if(r.error) return alert(r.error); alert('Rejected'); renderSettingsAdmin(); };
+    }else{
+      row.querySelector('.rm').onclick = async()=>{ const r=await API.post('/api/admin/users/set-limited',{userId:u.id,status:'none'}); if(r.error) return alert(r.error); alert('Removed'); renderSettingsAdmin(); };
+    }
+    return row;
+  };
+  const pwrap=$('#laPending'); pending.forEach(u=> pwrap.appendChild(mkRow(u,'pending')));
+  const awrap=$('#laApproved'); approved.forEach(u=> awrap.appendChild(mkRow(u,'approved')));
+}
+
+// ===== Routing =====
+function route(){
+  const me=API._requireUser(); const hasToken=!!me;
+  showAuthGate(!hasToken); if(!hasToken){ setStep('stepChoice'); return; }
+
+  const h=location.hash.slice(2); const seg=h.split('?')[0].split('/').filter(Boolean);
+  const qs=new URLSearchParams(location.hash.split('?')[1]||'');
+
+  if (!seg.length) return viewHome();
+  if (seg[0]==='goods') return viewCategory('goods');
+  if (seg[0]==='services') return viewCategory('services');
+  if (seg[0]==='rentals') return viewCategory('rentals');
+  if (seg[0]==='jobs') return viewCategory('jobs');
+  if (seg[0]==='ads') return viewCategory('ads');
+  if (seg[0]==='search') return viewSearch(qs.get('q')||'');
+  if (seg[0]==='post') return viewPost(seg[1]||'goods');
+  if (seg[0]==='item') return viewItem(seg[1]);
+  if (seg[0]==='inbox') return viewInbox();
+  if (seg[0]==='listings') return viewListings();
+  if (seg[0]==='account') return viewAccount();
+  if (seg[0]==='settings') return viewSettings();
+
+  // fallback
+  return viewHome();
+}
+window.addEventListener('hashchange', route);
+
+// ===== Admin panel password gate helpers already above =====
+
+// ===== DOM Ready =====
+window.addEventListener('DOMContentLoaded', async ()=>{
   const env = await fetch('./env.json').then(r=>r.json()).catch(()=>({}));
   AFRIMONEY_NUMBER = env.AFRIMONEY_NUMBER||'—';
   ORANGEMONEY_NUMBER = env.ORANGEMONEY_NUMBER||'—';
@@ -538,1084 +904,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   ADMIN_EMAILS = Array.isArray(env.ADMIN_EMAILS)?env.ADMIN_EMAILS:[];
   COUNTRY_CODE_ALLOW = env.COUNTRY_CODE_ALLOW||'';
   GOOGLE_OAUTH_CLIENT_ID = env.GOOGLE_OAUTH_CLIENT_ID||'';
+  ADMIN_PANEL_PASSWORD = env.ADMIN_PANEL_PASSWORD||'';
 
   $('#afr').textContent = AFRIMONEY_NUMBER; $('#orm').textContent = ORANGEMONEY_NUMBER;
-
-  // Wire big search row
   $('#globalSearch').addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ const q=e.currentTarget.value||''; location.hash = `#/search?q=${encodeURIComponent(q)}`; } });
-  $('#goLocation').addEventListener('click', ()=>{ location.hash = '#/location'; });
+  $('#goLocation').addEventListener('click', ()=>{ if(navigator.geolocation){ navigator.geolocation.getCurrentPosition(p=>{ setMyLoc(p.coords.latitude,p.coords.longitude); alert('Location set.'); }); } });
 
-  // Init Google Identity Services button when client id is present
-  if (GOOGLE_OAUTH_CLIENT_ID && window.google?.accounts?.id){
-    window.google.accounts.id.initialize({
-      client_id: GOOGLE_OAUTH_CLIENT_ID,
-      callback: async (resp)=>{
-        const r = await API.post('/api/auth/google-id-token', { id_token: resp.credential });
-        if (r.token) API.setToken(r.token); else alert(r.error||'Google sign-in failed');
-      }
-    });
-  }
+  renderAuth(); wireAuthGate(); mountHero();
 
-  sweepTrials();
-  setInterval(sweepTrials, 60*60*1000);
-  playBoopOnNew();
-  setInterval(playBoopOnNew, 20000);
-
-  // Footer Post quick chooser opens Goods form
-  const fp=$('#footPost');
-  if (fp){ fp.addEventListener('click', (e)=>{ e.preventDefault(); openQuickPostChooser(); }); }
-
-  renderAuth(); route();
+  const fp=$('#footPost'); if(fp){ fp.addEventListener('click',(e)=>{ e.preventDefault(); openQuickPostChooser(); }); }
+  route();
 });
-
-/* ------------
-   Auth UI
--------------*/
-function renderAuth(){
-  const el=$('#authArea'), me=API._requireUser();
-  if (!me){
-    el.innerHTML = `
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <input id="email" placeholder="email" />
-        <input id="pass" type="password" placeholder="password"/>
-        <input id="code" placeholder="verification code (for signup)"/>
-        <button id="sendCodeBtn">Send code</button>
-        <button id="verifySignupBtn">Verify & Sign up</button>
-        <button id="loginBtn">Login</button>
-        <span id="googleBtnContainer"></span>
-      </div>
-    `;
-    $('#sendCodeBtn').onclick = async()=>{ const email=$('#email').value.trim(); if(!email) return alert('Enter email'); const r=await API.post('/api/auth/send-code',{email}); if(r.error) alert(r.error); else alert('Code sent (demo shows it in alert).'); };
-    $('#verifySignupBtn').onclick = async()=>{ const email=$('#email').value.trim(), password=$('#pass').value, code=$('#code').value.trim(); const r=await API.post('/api/auth/verify-signup',{email,password,code}); if(r.token){ API.setToken(r.token); } else alert(r.error||'Signup failed'); };
-    $('#loginBtn').onclick = async()=>{ const email=$('#email').value, password=$('#pass').value; const r=await API.post('/api/auth/login',{email,password}); if(r.token){ API.setToken(r.token); } else alert(r.error||'Login failed'); };
-
-    // Render Google button if GIS available
-    if (GOOGLE_OAUTH_CLIENT_ID && window.google?.accounts?.id){
-      window.google.accounts.id.renderButton($('#googleBtnContainer'), { theme: 'outline', size: 'medium', type:'standard', shape:'pill' });
-    } else {
-      const btn=document.createElement('button'); btn.textContent='Continue with Google'; btn.onclick=()=>alert('Google Sign-In requires GOOGLE_OAUTH_CLIENT_ID in env.json'); $('#googleBtnContainer').appendChild(btn);
-    }
-  } else {
-    el.innerHTML = `
-      <span class="pill" style="background:#fff">Hi, ${me.email}</span>
-      <button id="logoutBtn">Logout</button>
-      <button id="reqLA">Request Limited Admin</button>
-    `;
-    $('#logoutBtn').onclick = ()=>{ API.setToken(null); location.hash='#/'; };
-    $('#reqLA').onclick = async()=>{ const r=await API.post('/api/users/request-limited-admin',{}); alert('Limited admin status: '+(r.status||JSON.stringify(r))); };
-  }
-  toggleAdminLink();
-}
-
-/* ------------
-   Back button
--------------*/
-function renderBackBtn(show){
-  const app = $('#app');
-  let b = $('#backBtn');
-  if (!b){
-    b=document.createElement('button'); b.id='backBtn'; b.textContent='← Return';
-    b.onclick=()=>{ history.length>1 ? history.back() : (location.hash='#/'); };
-    app.parentNode.insertBefore(b, app);
-  }
-  b.style.display = show ? '' : 'none';
-}
-
-/* ------------
-   Photos picker
--------------*/
-function photosBlock(idPrefix, title='Photos'){
-  return `
-  <div class="card" style="margin-top:10px;">
-    <h3 style="margin:4px 0 8px 0;">${title}</h3>
-    <div class="row">
-      <div><label>Take Photo <input type="file" id="${idPrefix}Cam" accept="image/*" capture="environment" /></label></div>
-      <div><label>Select Photos (up to 8) <input type="file" id="${idPrefix}Gal" accept="image/*" multiple /></label></div>
-    </div>
-    <div id="${idPrefix}Strip" class="photos" style="margin-top:6px"></div>
-  </div>`;
-}
-window._preUploadPhotos = [];
-function openQuickPostChooser(){
-  const ov=document.createElement('div');
-  ov.style='position:fixed;inset:0;background:#0007;display:flex;align-items:flex-end;z-index:9999';
-  const sheet=document.createElement('div');
-  sheet.style='background:#fff;border-radius:16px 16px 0 0;padding:12px;box-shadow:0 -8px 24px rgba(0,0,0,.18);width:100%;max-width:520px;margin:0 auto';
-  sheet.innerHTML=`
-    <h3 style="margin:0 0 8px 0">Create post</h3>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button id="qpTake" class="btn">📷 Take photo</button>
-      <button id="qpSelect" class="btn">🖼️ Select photos</button>
-      <button id="qpCancel" class="btn" style="background:#f3f4f6;border-color:#e5e7eb">Cancel</button>
-    </div>
-    <p class="muted" style="margin-top:8px">We’ll open the Goods form next.</p>`;
-  ov.appendChild(sheet); document.body.appendChild(ov);
-  const close=()=>ov.remove();
-  const cam=document.createElement('input'); cam.type='file'; cam.accept='image/*'; cam.capture='environment';
-  const gal=document.createElement('input'); gal.type='file'; gal.accept='image/*'; gal.multiple=true;
-  cam.addEventListener('change', ()=>{ window._preUploadPhotos=[]; if (cam.files?.[0]) window._preUploadPhotos.push(cam.files[0]); close(); location.hash='#/post/goods'; });
-  gal.addEventListener('change', ()=>{ window._preUploadPhotos=[]; for(const f of gal.files||[]){ if(f.type.startsWith('image/')) window._preUploadPhotos.push(f); } if(_preUploadPhotos.length>8) _preUploadPhotos.length=8; close(); location.hash='#/post/goods'; });
-  $('#qpTake',sheet).onclick = ()=> cam.click();
-  $('#qpSelect',sheet).onclick = ()=> gal.click();
-  $('#qpCancel',sheet).onclick = close;
-  ov.addEventListener('click', (e)=>{ if(e.target===ov) close(); });
-}
-
-/* ========== HEADER HERO (TINY + clickable) ========== */
-function renderHero(){
-  const host = document.getElementById('heroRotator');
-  if (!host || host.dataset.wired) return;
-  host.dataset.wired = '1';
-
-  host.innerHTML = `
-    <div class="hero-slide active" data-kind="services" style="background: radial-gradient(120% 120% at 0% 0%, #fff7e6 0%, #fdebc8 45%, #f4dfa9 100%);">
-      <div class="hero-art">
-        <a href="#/services" aria-label="Browse Services">
-          <svg viewBox="0 0 240 180" width="100%" height="100%" class="floaty" aria-hidden="true">
-            <defs>
-              <linearGradient id="gHat" x1="0" x2="1"><stop offset="0" stop-color="#f3d48a"/><stop offset="1" stop-color="#d4a017"/></linearGradient>
-              <linearGradient id="gShirt" x1="0" x2="1"><stop offset="0" stop-color="#ffe6b3"/><stop offset="1" stop-color="#ffcf6f"/></linearGradient>
-            </defs>
-            <path d="M80 78c0-22 18-40 40-40s40 18 40 40" fill="url(#gHat)" stroke="#b1840f" stroke-width="2" />
-            <circle cx="120" cy="96" r="22" fill="#ffddb2" stroke="#e7c08c" stroke-width="2"/>
-            <circle cx="112" cy="96" r="3" fill="#2d1f12"/><circle cx="128" cy="96" r="3" fill="#2d1f12"/>
-            <path d="M112 106c4 6 12 6 16 0" stroke="#2d1f12" stroke-width="2" fill="none" stroke-linecap="round"/>
-            <rect x="92" y="120" width="56" height="34" rx="8" fill="url(#gShirt)" stroke="#e6c384" stroke-width="2"/>
-          </svg>
-        </a>
-      </div>
-      <div class="hero-copy">
-        <h3>Let us handle your service needs</h3>
-        <p>Find trusted plumbers, electricians, cleaners, and more.</p>
-        <a class="hero-cta btn" href="#/services">Browse Services</a>
-      </div>
-    </div>
-
-    <div class="hero-slide" data-kind="boost" style="background: radial-gradient(120% 120% at 100% 0%, #fff7e6 0%, #ffe6b8 45%, #f0d089 100%);">
-      <div class="hero-art">
-        <a href="#/post/goods" aria-label="Try Boost">
-          <svg viewBox="0 0 240 180" width="100%" height="100%" class="floaty" aria-hidden="true">
-            <path d="M120 20 L90 100 L130 100 L110 160 L160 80 L120 80 Z" fill="#ffd766" stroke="#b1840f" stroke-width="2" />
-          </svg>
-        </a>
-      </div>
-      <div class="hero-copy">
-        <h3>Be the first to see new items — try for free</h3>
-        <p>Boost your listings for faster responses with a 14-day trial.</p>
-        <a class="hero-cta btn" href="#/post/goods">Try Boost</a>
-      </div>
-    </div>
-  `;
-
-  let idx = 0;
-  const slides = host.querySelectorAll('.hero-slide');
-  setInterval(()=>{
-    slides[idx].classList.remove('active');
-    idx = (idx + 1) % slides.length;
-    slides[idx].classList.add('active');
-  }, 60 * 1000);
-}
-function setHeroVisible(on){
-  const sec = document.getElementById('heroSection');
-  if(!sec) return;
-  sec.style.display = on ? '' : 'none';
-  if (on) renderHero();
-}
-
-/* ===========================
-   Views
-   =========================== */
-
-function googleLocationBlock(){
-  return `
-<div class="card" style="margin-top:10px;">
-  <h3 style="margin:4px 0 8px 0;">Location</h3>
-  <div class="row">
-    <div><label>Search address (Google) <input id="placeInput" placeholder="Start typing… (Sierra Leone)" /></label></div>
-    <div><label>Chosen address <input name="location_address" id="locAddress" readonly /></label></div>
-  </div>
-  <div class="row">
-    <div><button type="button" id="useGPS">Use my current location</button></div>
-    <div><small class="muted">We save a general location with your listing.</small></div>
-  </div>
-  <div id="postMap" style="height:240px;display:none;margin-top:10px;border:1px solid #e5e7eb;border-radius:10px;"></div>
-  <input type="hidden" name="location_lat" id="locLat">
-  <input type="hidden" name="location_lng" id="locLng">
-  <input type="hidden" name="location_place_id" id="locPid">
-</div>`;
-}
-
-function boostBlock({ category, mandatory=false }){
-  const trialPart = !mandatory ? `
-    <label style="display:flex;gap:8px;align-items:center;margin-top:6px;">
-      <input type="checkbox" name="boost_trial" id="boostTrial"/>
-      <span>Start <strong>14-day free trial</strong> (no charge)</span>
-    </label>
-  ` : `
-    <div class="muted" style="margin-top:6px">
-      Boost is <strong>required</strong> for Advertising. No free trial.
-    </div>
-  `;
-  return `
-<div class="card" id="boostCard" style="margin-top:10px;">
-  <h3 style="margin:4px 0 8px 0;">Boost & Premium</h3>
-
-  <label>Boost Months (0–12)
-    <input name="boosted_months" id="boostMonths" type="number" min="${mandatory?1:0}" max="12" value="${mandatory?1:0}"/>
-    <small class="muted">${mandatory?'Minimum 1 month for Ads.':'0 means no boost.'}</small>
-  </label>
-
-  <div id="boostPriceLine" class="muted" style="margin:4px 0 0 0">
-    NLe 100 per month · Est. total: <strong>NLe ${mandatory?100:0}</strong>
-  </div>
-
-  <div id="mmPayBlock" style="margin-top:8px; display:${mandatory?'block':'none'}">
-    <label>Mobile money payment screenshot (PNG/JPG)
-      <input type="file" id="paymentScreenshot" name="payment_screenshot" accept="image/*" />
-      <small class="muted">Required when Boost months &gt; 0${mandatory?' (Ads require Boost).':''}</small>
-    </label>
-  </div>
-
-  <label>Seller Contact Phone (Admin only; for boosted posts)
-    <input name="boost_contact_phone" placeholder="+232…"/>
-    <small class="muted">Only visible to Admin/Limited Admin to verify boosted listings.</small>
-  </label>
-
-  <div id="premiumTeaser" class="muted" style="margin-top:6px; display:flex; align-items:center; gap:8px;">
-    <span class="badge">Premium</span>
-    <span>Get quick responses when you upgrade to <strong>Premium</strong>.</span>
-  </div>
-
-  <div class="muted" style="margin-top:6px">Let your item be <strong>priority at the top</strong>.</div>
-  ${trialPart}
-</div>`;
-}
-
-function sortPostsForFeed(items){
-  return items.slice().sort((a,b)=>{
-    const ap=a.is_pinned?1:0, bp=b.is_pinned?1:0;
-    if (bp !== ap) return bp - ap;
-    const abBoost = ((b.boosted_months||0)>0 || trialActive(b)) - ((a.boosted_months||0)>0 || trialActive(a));
-    if (abBoost !== 0) return abBoost;
-    const abMonths = (Number(b.boosted_months||0) - Number(a.boosted_months||0));
-    if (abMonths !== 0) return abMonths;
-    return (b.createdAt||'').localeCompare(a.createdAt||'');
-  });
-}
-
-async function viewHome(){
-  renderBackBtn(false);
-  setHeroVisible(true);
-  app.innerHTML = `
-    <h2>Home · Goods Feed</h2>
-    <p class="muted" style="margin:4px 0 10px 0; font-size:13px;">
-      <a href="#/post/goods" style="text-decoration:underline">
-        Boost your listing — get faster responses. Try for free
-      </a>
-    </p>
-    <div class="grid" id="grid"></div>
-  `;
-  const posts = await API.get('/api/posts?category=goods');
-  const grid=$('#grid');
-  sortPostsForFeed(posts).forEach(p=> renderCard(p, grid));
-  playBoopOnNew();
-}
-
-function attachShareSave(container, post){
-  const bar=document.createElement('div'); bar.className='actions'; bar.style.marginTop='8px';
-  const saved=isSaved(post.id), count=saveCount(post.id);
-  const shareUrl=`${location.origin}${location.pathname}#/item/${post.id}`;
-  bar.innerHTML = `
-    <button class="shareBtn">Share</button>
-    <button class="saveBtn">${saved?'Saved':'Save'}</button>
-    <small class="muted" style="margin-left:6px">${count?`${count} saved`:''}</small>
-  `;
-  bar.querySelector('.shareBtn').onclick = async()=>{
-    const text=`${post.title||'Listing'} — ${post.category||''}`;
-    try{
-      if (navigator.share){ await navigator.share({title:post.title||'Listing', text, url:shareUrl}); }
-      else { await navigator.clipboard.writeText(shareUrl); alert('Link copied!'); }
-    }catch{}
-  };
-  bar.querySelector('.saveBtn').onclick = async()=>{
-    const me=API._requireUser(); if(!me){ alert('Please log in first.'); return; }
-    const r=await API.post('/api/saved/toggle',{postId:post.id});
-    if(r.error){ alert(r.error); return; }
-    bar.querySelector('.saveBtn').textContent = r.saved?'Saved':'Save';
-    const cnt=bar.querySelector('small'); cnt.textContent = r.count?`${r.count} saved`:'';
-  };
-  container.appendChild(bar);
-}
-
-async function messageOwner(post, text){
-  const me = API._requireUser();
-  if (!me){ alert('Please log in first.'); return; }
-  if (me.id === post.userId){ alert('This is your own listing.'); return; }
-  const r = await API.post('/api/messages/start-with-user', { userId: post.userId });
-  if (r.error){ alert(r.error); return; }
-  await API.post('/api/messages/send', { threadId: r.threadId, text });
-  location.hash = `#/chat/${r.threadId}`;
-}
-
-function renderCard(p, grid, opts={}){
-  const bits=[];
-  if (p.is_pinned) bits.push('Top');
-  if (p.boosted_months>0 || trialActive(p)) bits.push('Premium');
-  if (p.price_firm) bits.push('Firm');
-  if (p.condition) bits.push(p.condition);
-  if (p.status && p.status !== 'available') bits.push(p.status.toUpperCase());
-
-  const c = card(p.title, p.description, bits.join(' • '));
-  if (p.status === 'sold'){ c.style.opacity = '0.6'; }
-
-  if (p.location_address){
-    const loc=document.createElement('p'); loc.className='muted'; loc.style.marginTop='6px';
-    loc.textContent=`📍 ${p.location_address}`; c.appendChild(loc);
-  }
-
-  if (p.category === 'rentals'){
-    const meta=document.createElement('p'); meta.className='muted'; meta.style.marginTop='6px';
-    const parts=[];
-    if (p.property_child) parts.push(p.property_child);
-    if (p.bedrooms) parts.push((p.bedrooms==='0'?'Studio':`${p.bedrooms} BR`));
-    if (p.bathrooms) parts.push(`${p.bathrooms} BA`);
-    if (p.furnished) parts.push(p.furnished==='yes'?'Furnished':(p.furnished==='partly'?'Partly furnished':'Unfurnished'));
-    if (p.size_sqm) parts.push(`${p.size_sqm} m²`);
-    if (p.listing_type) parts.push(p.listing_type==='sell'?'For Sale':'For Rent');
-    meta.textContent = parts.join(' • ');
-    c.appendChild(meta);
-  }
-
-  // Ask / Offer / Quote (blocked if SOLD)
-  {
-    const me=API._requireUser?.();
-    const isOwner = !!me && me.id === p.userId;
-    const canMessage = (p.status !== 'sold');
-
-    if (!me || !isOwner){
-      if (canMessage){
-        const actions = document.createElement('div');
-        actions.className = 'actions';
-        actions.style.marginTop = '8px';
-
-        const askBtn = document.createElement('button');
-        askBtn.textContent = 'Ask';
-        askBtn.title = 'Is this still available?';
-        askBtn.onclick = ()=> messageOwner(p, `Hi! Is "${p.title}" still available?`);
-        actions.appendChild(askBtn);
-
-        const offerBtn = document.createElement('button');
-        offerBtn.textContent = 'Make an offer';
-        offerBtn.onclick = ()=>{
-          const amount = prompt('Your offer (NLe):');
-          if (amount == null || !String(amount).trim()) return;
-          const note = prompt('Add a note (optional):') || '';
-          messageOwner(p, `Offer for "${p.title}": NLe ${String(amount).trim()}${note ? ` — ${note}` : ''}`);
-        };
-        actions.appendChild(offerBtn);
-
-        if (p.category === 'services'){
-          const quoteBtn = document.createElement('button');
-          quoteBtn.textContent = 'Request Quote';
-          quoteBtn.onclick = async()=>{
-            const me = API._requireUser(); if(!me){ alert('Please log in first.'); return; }
-            const details = prompt('Describe the work and timeline for your quote:');
-            if (details == null || !details.trim()) return;
-            const r = await API.post('/api/quotes/create', { postId: p.id, details });
-            if (r.error){ alert(r.error); return; }
-            alert('Quote request sent! We also messaged the provider.');
-            location.hash = '#/inbox';
-          };
-          actions.appendChild(quoteBtn);
-        }
-
-        c.appendChild(actions);
-      }
-    }
-  }
-
-  // Staff pin + boosted phone
-  const me=API._requireUser?.();
-  if (isAdminOrLimited(me)){
-    const staff=document.createElement('div'); staff.className='actions'; staff.style.marginTop='6px';
-    staff.innerHTML = `<button class="pinBtn">${p.is_pinned?'Unpin from Top':'Pin to Top'}</button>`;
-    staff.querySelector('.pinBtn').onclick = async()=>{
-      const r=await API.post('/api/admin/posts/pin',{postId:p.id, pin:!p.is_pinned});
-      if(r.error){ alert(r.error); return; } route();
-    };
-    if ((p.boosted_months||0)>0 && (p.boost_contact_phone||'').trim()){
-      const phone=document.createElement('p'); phone.className='muted'; phone.style.margin='4px 0 0';
-      const tel=String(p.boost_contact_phone).trim();
-      phone.innerHTML = `☎️ <strong>Seller phone:</strong> <a href="tel:${tel}">${tel}</a>`;
-      staff.appendChild(phone);
-    }
-    c.appendChild(staff);
-  }
-
-  // Owner/Admin: status control on feed when owner view (or admin)
-  {
-    const me = API._requireUser?.();
-    const canEdit = (me && (me.id === p.userId || isAdminOrLimited(me)));
-    if ((opts.ownerControls || isAdminOrLimited(me)) && canEdit){
-      const ctl = document.createElement('div');
-      ctl.className = 'actions';
-      ctl.style.marginTop = '8px';
-      ctl.innerHTML = `
-        <label style="display:flex;align-items:center;gap:8px">
-          <span class="muted">Status</span>
-          <select class="statusSel">
-            <option value="available" ${p.status==='available'?'selected':''}>Available</option>
-            <option value="pending" ${p.status==='pending'?'selected':''}>Pending</option>
-            <option value="sold" ${p.status==='sold'?'selected':''}>Sold</option>
-          </select>
-          <button class="applyBtn">Update</button>
-        </label>
-      `;
-      ctl.querySelector('.applyBtn').onclick = async()=>{
-        const val = ctl.querySelector('.statusSel').value;
-        const r = await API.post('/api/posts/update-status', { postId: p.id, status: val });
-        if (r.error){ alert(r.error); return; }
-        alert('Status updated.');
-        route();
-      };
-      c.appendChild(ctl);
-    }
-  }
-
-  const meOwner = API._requireUser?.();
-  if (p.category==='goods' && meOwner && p.userId===meOwner.id && !(p.boosted_months>0 || trialActive(p))){
-    const upsell = document.createElement('small');
-    upsell.className = 'muted'; upsell.style.display='block'; upsell.style.marginTop='6px';
-    upsell.innerHTML = `<a href="#/post/goods" style="text-decoration:underline">Boost this — 14-day trial</a>`;
-    c.appendChild(upsell);
-  }
-
-  attachShareSave(c,p);
-  grid.appendChild(c);
-}
-
-async function viewCategory(category){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const label=cap(category);
-  app.innerHTML = `<h2>${label} Feed</h2><div class="grid" id="grid"></div>`;
-  const grid=$('#grid');
-
-  // In-page Post CTAs
-  const ctaNeeded = ['services','rentals','jobs'].includes(category);
-  if (ctaNeeded){
-    const cta = document.createElement('div');
-    cta.style = 'margin:8px 0 14px 0; display:flex; justify-content:flex-start;';
-    const btnLabel = category==='services' ? 'Post a Service' : category==='rentals' ? 'Post a Rental' : 'Post a Job';
-    cta.innerHTML = `<a href="#/post/${category}" class="btn">${btnLabel}</a>`;
-    grid.parentNode.insertBefore(cta, grid);
-  }
-
-  if (category==='ads'){ return viewAds(); }
-
-  const posts = await API.get(`/api/posts?category=${category}`);
-  sortPostsForFeed(posts).forEach(p=> renderCard(p, grid));
-  playBoopOnNew();
-}
-
-async function viewItem(itemId){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const d=DB.data; const p=(d.posts||[]).find(x=>x.id===itemId);
-  if(!p){ app.innerHTML='<p>Item not found.</p>'; return; }
-  app.innerHTML = `<section><h2>${(p.category||'').toUpperCase()} · ${p.title||''}</h2><div class="card" id="itemCard"></div><p style="margin-top:10px"><a href="#/${p.category||''}">← Back to ${p.category||'feed'}</a></p></section>`;
-  const c = card(p.title, p.description, [p.is_pinned?'Top':'',(p.boosted_months>0||trialActive(p))?'Premium':'',p.condition||'',(p.status!=='available'?p.status.toUpperCase():'')].filter(Boolean).join(' • '));
-  if (p.location_address){ const loc=document.createElement('p'); loc.className='muted'; loc.style.marginTop='6px'; loc.textContent=`📍 ${p.location_address}`; c.appendChild(loc); }
-  attachShareSave(c,p);
-
-  // Owner/Admin control on item page
-  const me = API._requireUser?.();
-  const canEdit = (me && (me.id === p.userId || isAdminOrLimited(me)));
-  if (canEdit){
-    const ctl = document.createElement('div'); ctl.className='actions'; ctl.style.marginTop='8px';
-    ctl.innerHTML = `
-      <label style="display:flex;align-items:center;gap:8px">
-        <span class="muted">Status</span>
-        <select class="statusSel">
-          <option value="available" ${p.status==='available'?'selected':''}>Available</option>
-          <option value="pending" ${p.status==='pending'?'selected':''}>Pending</option>
-          <option value="sold" ${p.status==='sold'?'selected':''}>Sold</option>
-        </select>
-        <button class="applyBtn">Update</button>
-      </label>`;
-    ctl.querySelector('.applyBtn').onclick = async()=>{
-      const val = ctl.querySelector('.statusSel').value;
-      const r = await API.post('/api/posts/update-status', { postId: p.id, status: val });
-      if (r.error){ alert(r.error); return; }
-      alert('Status updated.'); route();
-    };
-    c.appendChild(ctl);
-  }
-
-  $('#itemCard').appendChild(c);
-}
-
-async function viewSearch(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const q = new URLSearchParams((location.hash.split('?')[1]||'')).get('q') || prompt('Search term:') || '';
-  const d=DB.data;
-  const list = d.posts.filter(p=> [p.title,p.description].join(' ').toLowerCase().includes(q.toLowerCase()));
-  app.innerHTML = `<h2>Search</h2><p class="muted">Results for: <strong>${q||'—'}</strong></p><div class="grid" id="grid"></div>`;
-  const grid=$('#grid');
-  sortPostsForFeed(list).forEach(p=>{
-    renderCard(p, grid);
-  });
-}
-
-async function viewListings(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  const d=DB.data; const mine=d.posts.filter(p=>p.userId===me.id);
-  app.innerHTML = `<section><h2>Your Listings</h2><div class="grid" id="grid"></div></section>`;
-  const grid=$('#grid');
-  sortPostsForFeed(mine).forEach(p=> renderCard(p, grid, { ownerControls: true }));
-}
-
-async function viewInbox(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  app.innerHTML = `<section><h2>Inbox</h2><div id="threads"></div></section>`;
-
-  const notes=listMyNotifications();
-  if (notes.length){
-    const n=document.createElement('div'); n.className='card';
-    n.innerHTML = `<h3 style="margin:0 0 8px 0;">Notifications</h3>
-      <ul id="noteList" style="margin:0;padding-left:18px"></ul>
-      <div class="actions" style="margin-top:8px"><button id="markNotes">Mark all read</button></div>`;
-    $('#threads').appendChild(n);
-
-    const ul = $('#noteList', n);
-    notes.forEach(nt=>{
-      const li = document.createElement('li');
-      const when = new Date(nt.ts).toLocaleString();
-      const img = nt.image_name ? `<div style="margin:6px 0"><span class="muted">Image: ${nt.image_name}</span></div>` : '';
-      const cta = nt.cta_url && nt.cta_label ? `<div style="margin-top:6px"><a class="btn" href="${nt.cta_url}" target="_blank" rel="noopener">${nt.cta_label}</a></div>` : '';
-      const badge = nt.type==='broadcast' ? `<span class="badge" style="position:static;margin-left:6px">App Ad</span>` : '';
-      li.innerHTML = `<strong>${nt.title}</strong> ${badge}<br/>${nt.body}<br/><small class="muted">${when}</small>${img}${cta}`;
-      ul.appendChild(li);
-    });
-
-    $('#markNotes').onclick=()=>{ markAllNotificationsRead(); alert('Notifications marked read'); route(); };
-  }
-
-  const tgrid=document.createElement('div'); tgrid.className='grid'; $('#threads').appendChild(tgrid);
-  const list = await API.get('/api/messages/threads');
-  list.forEach(t=>{
-    const div=document.createElement('div'); div.className='card';
-    div.innerHTML = `<h3>${t.withEmail}</h3><p class="muted">${t.lastText||'—'}</p>${t.seenByOther?'<small class="muted">Seen</small>':''}<div class="actions" style="margin-top:8px"><a class="btn" href="#/chat/${t.id}">Open</a></div>`;
-    tgrid.appendChild(div);
-  });
-}
-
-async function viewChat(threadId){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  app.innerHTML = `<section><h2>Chat</h2><div class="card" style="display:flex;flex-direction:column;gap:8px;height:60vh"><div id="msgs" style="overflow:auto;display:flex;flex-direction:column;gap:8px"></div><div class="row"><div><input id="msgText" placeholder="Type a message"/></div><div><button id="sendBtn">Send</button></div></div></div></section>`;
-
-  async function render(){
-    const msgs = await API.get(`/api/messages/thread?tid=${encodeURIComponent(threadId)}`);
-    const d=DB.data; const th=d.threads.find(t=>t.id===threadId); const otherId=th?.participants?.find(id=>id!==me.id);
-    const box=$('#msgs'); box.innerHTML='';
-    msgs.forEach(m=>{
-      const mine = m.from===me.id;
-      const item=document.createElement('div'); item.style.alignSelf=mine?'flex-end':'flex-start'; item.className='card'; item.style.maxWidth='75%';
-      const ts=new Date(m.ts).toLocaleString();
-      item.innerHTML = `<p>${m.text}</p><small class="muted">${ts}</small>`;
-      if (mine){
-        const rb=m.readBy||[]; const seenByOther=otherId?rb.includes(otherId):false;
-        const isMyLast = msgs.filter(x=>x.from===me.id).slice(-1)[0]?.id===m.id;
-        if (isMyLast && seenByOther){ const s=document.createElement('div'); s.innerHTML='<small class="muted">Seen</small>'; item.appendChild(s); }
-      }
-      box.appendChild(item);
-    });
-    box.scrollTop=box.scrollHeight;
-  }
-
-  $('#sendBtn').onclick = async()=>{
-    const t=$('#msgText').value.trim(); if(!t) return;
-    await API.post('/api/messages/send',{threadId, text:t}); $('#msgText').value=''; await render();
-  };
-
-  await render();
-  await API.post('/api/messages/seen',{threadId});
-}
-
-async function viewLocation(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  app.innerHTML = `<section><h2>My Location</h2><p class="muted">Used to improve search and show nearby items. (Static demo)</p></section>`;
-}
-
-/* ---------- Ads / Bloggers ---------- */
-async function viewAds(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  app.innerHTML = `<section>
-    <h2>Advert with Bloggers</h2>
-    <div class="card"><h3>Approved Bloggers</h3><div id="blogList" class="muted">Loading…</div></div>
-    <div class="card" style="margin-top:10px"><h3>Actions</h3>
-      <div class="actions">
-        <a class="btn" href="#/ads/become-blogger">Become a Blogger</a>
-        <a class="btn" href="#/ads/create-campaign">Create Ad Campaign</a>
-        <a class="btn" id="seeCamps" href="#/ads/campaigns" style="display:none">View Campaigns</a>
-      </div>
-    </div>
-  </section>`;
-  const me=API._requireUser(); if (isAdminOrBlogger(me)) $('#seeCamps').style.display='';
-  const res=await API.get('/api/ads/blogger/list'); if(res.error){ $('#blogList').textContent=res.error; return; }
-  $('#blogList').innerHTML = (res.bloggers||[]).map(b=>`<div style="margin:6px 0"><strong>${b.platform||'—'}</strong> — ${b.handle||''} · ${b.followers||0} followers · ${cents(b.price_cents||0)} per promo</div>`).join('') || '<p class="muted">No approved bloggers yet.</p>';
-}
-async function viewBecomeBlogger(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  app.innerHTML = `<section><h2>Become a Blogger</h2>
-  <div class="card"><form id="bf">
-    <div class="row">
-      <div><label>Platform <input name="platform" placeholder="TikTok, Instagram…"/></label></div>
-      <div><label>Handle <input name="handle" placeholder="@handle"/></label></div>
-      <div><label>Followers <input name="followers" type="number" min="0"/></label></div>
-    </div>
-    <div class="row">
-      <div><label>Price per promo (¢) <input name="price_cents" type="number" min="0"/></label></div>
-      <div><label>Profile Photo <input type="file" name="profile_photo" accept="image/*"/></label></div>
-    </div>
-    <label>Bio <textarea name="bio" placeholder="About your audience…"></textarea></label>
-    <div class="actions"><button class="btn" type="submit">Submit</button></div>
-  </form></div></section>`;
-  $('#bf').addEventListener('submit', async(e)=>{ e.preventDefault(); const r=await API.postForm('/api/ads/blogger/create', new FormData(e.target)); if(r.error){alert(r.error);return;} alert('Submitted! Pending approval.'); location.hash='#/ads'; });
-}
-async function viewCreateCampaign(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  app.innerHTML = `<section><h2>Create Ad Campaign</h2>
-  <div class="card"><form id="cf">
-    <div class="row">
-      <div><label>Product Title <input name="product_title" required/></label></div>
-      <div><label>Budget (¢) <input name="budget_cents" type="number" min="0"/></label></div>
-    </div>
-    <label>Product Description <textarea name="product_desc"></textarea></label>
-    <div class="row">
-      <div><label>Target Platform <input name="target_platform" placeholder="TikTok / Instagram / …"/></label></div>
-      <div><label>Payment Screenshot <input type="file" name="payment_screenshot" accept="image/*"/></label></div>
-    </div>
-    <div class="actions"><button class="btn" type="submit">Create</button></div>
-  </form></div></section>`;
-  $('#cf').addEventListener('submit', async(e)=>{ e.preventDefault(); const r=await API.postForm('/api/ads/campaign/create', new FormData(e.target)); if(r.error){alert(r.error);return;} alert('Campaign submitted.'); location.hash='#/ads'; });
-}
-async function viewAdCampaigns(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  const res=await API.get('/api/ads/campaigns/list'); if(res.error){ app.innerHTML='<p>'+res.error+'</p>'; return; }
-  app.innerHTML = `<section><h2>Advert with Bloggers · Campaigns</h2><div id="wrap" class="grid"></div></section>`;
-  const wrap=$('#wrap'); (res.campaigns||[]).forEach(c=>{
-    const div=document.createElement('div'); div.className='card';
-    div.innerHTML=`<h3>${c.product_title}</h3><p class="muted">${c.product_desc||''}</p><p class="muted">Budget: ${cents(c.budget_cents||0)} · Status: ${c.status}</p>`;
-    wrap.appendChild(div);
-  });
-}
-
-/* ---------- Post forms ---------- */
-function postForm({category, allowBoost=false, boostMandatory=false}){
-  const wrap = document.createElement('div');
-  const title = `Create ${cap(category)} Post`;
-  wrap.innerHTML = `<h2>${title}</h2><form id="pform"></form>`;
-  const f = $('#pform', wrap);
-
-  // Common: photos
-  f.insertAdjacentHTML('beforeend', photosBlock('post'));
-  const pre = window._preUploadPhotos || [];
-  const strip = $('#postStrip', wrap);
-  const addPhotoThumb = (file)=>{
-    const ph=document.createElement('div'); ph.className='ph';
-    const img=document.createElement('img'); img.alt='upload'; img.src=URL.createObjectURL(file);
-    const x=document.createElement('button'); x.className='x'; x.type='button'; x.textContent='×';
-    x.onclick=()=>ph.remove();
-    ph.appendChild(img); ph.appendChild(x); strip.appendChild(ph);
-  };
-  pre.forEach(addPhotoThumb);
-
-  if (category==='goods' || category==='jobs' || category==='ads'){
-    f.insertAdjacentHTML('beforeend', `
-      <div class="row">
-        <div><label>Title <input name="title" required /></label></div>
-        <div><label>Price (¢) <input name="price_cents" type="number" min="0" /></label></div>
-      </div>
-      <label>Description<textarea name="description"></textarea></label>
-    `);
-    if (category==='goods'){
-      f.insertAdjacentHTML('beforeend', `
-        <div class="row">
-          <div><label>Parent Category
-            <select name="parent_cat">
-              <option>Electronics & Media</option><option>Home & Garden</option><option>Home Decoration</option>
-              <option>Clothing & Shoes</option><option>Vehicles</option><option>Sports & Outdoors</option>
-              <option>Baby & Kids</option><option>Health & Beauty</option><option>Pets</option><option>Other</option>
-            </select></label></div>
-          <div><label>Sub-category (Child) <input name="child_cat" placeholder="Phones, Laptops, Sofas…"/></label></div>
-        </div>
-        <div class="row">
-          <div><label>Condition
-            <select name="condition"><option value="">—</option><option>New</option><option>Like new</option><option>Normal wear</option><option>Needs repair</option></select>
-          </label></div>
-          <div><label>Type <input name="item_type" placeholder="Type/model"/></label></div>
-        </div>
-        <div class="row">
-          <div><label>Brand <input name="brand" /></label></div>
-          <div><label>Color <input name="color" /></label></div>
-          <div><label>Price firm? <select name="price_firm"><option value="">No</option><option value="1">Yes</option></select></label></div>
-        </div>
-      `);
-    }
-  }
-  if (category==='services'){
-    f.insertAdjacentHTML('beforeend', `
-      <div class="row">
-        <div><label>Title <input name="title" required /></label></div>
-        <div><label>Min Price (¢) <input name="min_price_cents" type="number" min="0" /></label></div>
-      </div>
-      <label>Introduction<textarea name="intro" placeholder="Short intro…"></textarea></label>
-      <label>Services Description<textarea name="service_desc" placeholder="What you offer"></textarea></label>
-      <div class="row">
-        <div><label>Parent Category
-          <select name="service_parent">
-            <option>Personal Chef</option><option>Plumber</option><option>Contractor</option><option>Interior Decoration</option>
-            <option>AC Specialist</option><option>TV Repairer</option><option>Furniture Assembly</option><option>House Cleaning</option>
-            <option>Painting</option><option>Other</option>
-          </select></label></div>
-        <div><label>Sub-category <input name="service_child" placeholder="e.g., Deep cleaning, Wall painting"/></label></div>
-      </div>
-      <div class="row">
-        <div><label>Pricing model <input name="price_model" placeholder="Fixed / Hourly"/></label></div>
-        <div><label>Service radius (km) <input name="service_radius_km" type="number" min="0"/></label></div>
-      </div>
-      <div class="row">
-        <div><label>Availability
-          <select name="availability_days" multiple>
-            <option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option><option>Fri</option><option>Sat</option><option>Sun</option>
-          </select></label></div>
-        <div><label>Profile Photo <input type="file" name="profile_photo" accept="image/*"/></label></div>
-        <div><label>Portfolio (up to 8) <input type="file" name="portfolio" accept="image/*" multiple/></label></div>
-      </div>
-    `);
-  }
-  if (category==='rentals'){
-    f.insertAdjacentHTML('beforeend', `
-      <div class="row">
-        <div><label>Title <input name="title" required /></label></div>
-        <div><label>Price (¢) <input name="price_cents" type="number" min="0" /></label></div>
-      </div>
-      <label>Description<textarea name="description"></textarea></label>
-      <div class="row">
-        <div><label>Listing Type
-          <select name="listing_type"><option value="rent">Rent</option><option value="sell">Sell</option></select></label></div>
-        <div><label>Home Details (Parent)
-          <select name="property_parent">
-            <option>House</option><option>Apartment</option><option>Townhouse</option><option>Duplex</option><option>Land</option><option>Commercial</option>
-          </select></label></div>
-        <div><label>Sub Type (Child) <input name="property_child" placeholder="1-bed, Studio, Shop…"/></label></div>
-      </div>
-      <div class="row">
-        <div><label>Bedrooms <input name="bedrooms" type="number" min="0" placeholder="0=Studio"/></label></div>
-        <div><label>Bathrooms <input name="bathrooms" type="number" min="0"/></label></div>
-        <div><label>Furnished
-          <select name="furnished"><option value="">—</option><option value="yes">Yes</option><option value="partly">Partly</option><option value="no">No</option></select></label></div>
-      </div>
-      <div class="row">
-        <div><label>Size (m²) <input name="size_sqm" type="number" min="0"/></label></div>
-        <div><label>Lease Term <input name="lease_term" placeholder="12 months"/></label></div>
-        <div><label>Available From <input name="available_from" placeholder="YYYY-MM-DD"/></label></div>
-      </div>
-      <div class="row">
-        <div><label>Deposit (¢) <input name="deposit_cents" type="number" min="0"/></label></div>
-        <div><label>Pets Allowed <select name="pets_allowed"><option value="">—</option><option>Yes</option><option>No</option></select></label></div>
-        <div><label>Parking Spots <input name="parking_spots" type="number" min="0"/></label></div>
-      </div>
-      <div class="row">
-        <div><label>Amenities (multi) <select name="amenities" multiple><option>Water</option><option>Electricity</option><option>Backup Power</option><option>Security</option></select></label></div>
-        <div><label>Utilities (multi) <select name="utilities" multiple><option>Included</option><option>Not included</option></select></label></div>
-      </div>
-    `);
-  }
-
-  // Google location
-  f.insertAdjacentHTML('beforeend', googleLocationBlock());
-
-  // Boost
-  if (allowBoost){
-    f.insertAdjacentHTML('beforeend', boostBlock({category, mandatory: boostMandatory}));
-  }
-
-  // Submit
-  const submitBar = document.createElement('div'); submitBar.className='actions'; submitBar.style.marginTop='10px';
-  submitBar.innerHTML = `<button class="btn" type="submit">Publish</button>`;
-  f.appendChild(submitBar);
-
-  // Wire photos chooser
-  const gal = $('#postGal', wrap), cam = $('#postCam', wrap);
-  const pushThumbs = (files)=>{
-    for (const f of files||[]){ if (!f || !f.type || !f.type.startsWith('image/')) continue;
-      const ph=document.createElement('div'); ph.className='ph'; const img=document.createElement('img'); img.alt='upload'; img.src=URL.createObjectURL(f);
-      const x=document.createElement('button'); x.className='x'; x.type='button'; x.textContent='×'; x.onclick=()=>ph.remove();
-      ph.appendChild(img); ph.appendChild(x); $('#postStrip', wrap).appendChild(ph);
-    }
-  };
-  if (gal) gal.addEventListener('change', ()=> pushThumbs(gal.files));
-  if (cam) cam.addEventListener('change', ()=> pushThumbs(cam.files));
-
-  // Google maps autocomplete
-  (async()=>{
-    const g = await ensureGoogleMaps(); if(!g) return;
-    const input = $('#placeInput', wrap); const mapDiv=$('#postMap', wrap);
-    const map = new g.Map(mapDiv, {center:{lat:8.4606,lng:-11.7799}, zoom:7}); // Sierra Leone approx
-    const autocomplete = new g.places.Autocomplete(input, { fields: ['formatted_address','geometry','place_id'] });
-    autocomplete.addListener('place_changed', ()=>{
-      const place = autocomplete.getPlace(); if(!place || !place.geometry) return;
-      $('#locAddress',wrap).value = place.formatted_address || '';
-      $('#locLat',wrap).value = place.geometry.location.lat();
-      $('#locLng',wrap).value = place.geometry.location.lng();
-      $('#locPid',wrap).value = place.place_id || '';
-      mapDiv.style.display='block';
-      map.setCenter(place.geometry.location); map.setZoom(14);
-      new g.Marker({map, position: place.geometry.location});
-    });
-    $('#useGPS',wrap).onclick = ()=>{
-      if (!navigator.geolocation){ alert('Geolocation not supported'); return; }
-      navigator.geolocation.getCurrentPosition(pos=>{
-        const {latitude:lat, longitude:lng} = pos.coords||{};
-        $('#locLat',wrap).value=lat; $('#locLng',wrap).value=lng; $('#locAddress',wrap).value='My location (approx)';
-        mapDiv.style.display='block'; const ll={lat,lng}; map.setCenter(ll); map.setZoom(14); new g.Marker({map, position: ll});
-      }, ()=> alert('Could not get your location'));
-    };
-  })();
-
-  // Boost dynamic parts
-  const mline = ()=>{
-    const months = Number($('#boostMonths',wrap)?.value||0);
-    $('#boostPriceLine',wrap).innerHTML = `NLe 100 per month · Est. total: <strong>NLe ${months*100}</strong>`;
-    const trial = !!$('#boostTrial',wrap)?.checked;
-    $('#mmPayBlock',wrap).style.display = (months>0) ? 'block' : (trial ? 'none' : 'none');
-  };
-  $('#boostMonths',wrap)?.addEventListener('input', mline);
-  $('#boostTrial',wrap)?.addEventListener('change', mline);
-  mline();
-
-  // Submit handler
-  f.addEventListener('submit', async(e)=>{
-    e.preventDefault();
-    const me=API._requireUser(); if(!me){ alert('Please log in first.'); return; }
-    const fd = new FormData(f);
-    fd.append('category', category);
-
-    // Add a placeholder blob so names are parsed
-    const names=[];
-    $$('#postStrip .ph img', wrap).forEach((img,i)=>{ names.push(`photo_${i+1}.jpg`); });
-    if (names.length) fd.append('photos', new Blob([]), names.join(','));
-
-    // Boost screenshot name (if file chosen)
-    const pay = $('#paymentScreenshot',wrap);
-    if (pay && pay.files && pay.files[0]){ fd.append('payment_screenshot', pay.files[0]); }
-
-    const r = await API.postForm('/api/posts', fd);
-    if (r.error){ alert(r.error); return; }
-    alert('Published!');
-    location.hash = `#/${category}`;
-  });
-
-  return wrap;
-}
-
-/* ---------- Admin ---------- */
-async function viewAdmin(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  if (!isMainAdmin(me)) { app.innerHTML='<p>Admins only.</p>'; return; }
-  const d=DB.data;
-  const pending = d.users.filter(u=>u.limitedAdminStatus==='pending');
-  const allBloggers = d.bloggers||[];
-  app.innerHTML = `<section><h2>Admin</h2>
-    <div class="card">
-      <h3>Limited Admin Requests</h3>
-      <div id="laList">${pending.length?'':'<p class="muted">No pending requests.</p>'}</div>
-    </div>
-    <div class="card" style="margin-top:10px">
-      <h3>Bloggers</h3>
-      <div id="blogList">${allBloggers.length?'' : '<p class="muted">No blogger submissions yet.</p>'}</div>
-    </div>
-  </section>`;
-
-  const la=$('#laList');
-  pending.forEach(u=>{
-    const row=document.createElement('div'); row.style='display:flex;gap:8px;align-items:center;margin:6px 0';
-    row.innerHTML = `<span>${u.email}</span> <button class="btn approve">Approve</button> <button class="btn reject" style="background:#eee;border-color:#ddd">Reject</button>`;
-    row.querySelector('.approve').onclick = ()=>{ u.limitedAdminStatus='approved'; DB.data=DB.data; alert('Approved'); route(); };
-    row.querySelector('.reject').onclick = ()=>{ u.limitedAdminStatus='none'; DB.data=DB.data; alert('Rejected'); route(); };
-    la.appendChild(row);
-  });
-
-  const bl=$('#blogList');
-  allBloggers.forEach(b=>{
-    const u=getUserById(b.userId)||{};
-    const row=document.createElement('div'); row.style='display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap';
-    row.innerHTML = `<strong>${b.platform||'—'}</strong> ${b.handle||''} — ${b.followers||0} followers — ${cents(b.price_cents||0)} · ${b.status} · by ${u.email||''}
-      <div class="actions">
-        <button class="btn ap">Approve</button>
-        <button class="btn rej" style="background:#eee;border-color:#ddd">Reject</button>
-      </div>`;
-    row.querySelector('.ap').onclick = async()=>{ const r=await API.post('/api/admin/bloggers/update',{bloggerId:b.id,action:'approved'}); if(r.error){alert(r.error);return;} alert('Approved'); route(); };
-    row.querySelector('.rej').onclick = async()=>{ const r=await API.post('/api/admin/bloggers/update',{bloggerId:b.id,action:'rejected'}); if(r.error){alert(r.error);return;} alert('Rejected'); route(); };
-    bl.appendChild(row);
-  });
-}
-async function viewAdminQuotes(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  if(!isAdminOrLimited(me)) { app.innerHTML='<p>Staff only.</p>'; return; }
-  const r=await API.post('/api/admin/quotes/list',{}); if(r.error){ app.innerHTML='<p>'+r.error+'</p>'; return; }
-  app.innerHTML = `<section><h2>Quotes</h2><div id="qwrap" class="grid"></div></section>`;
-  const wrap=$('#qwrap');
-  (r.quotes||[]).forEach(q=>{
-    const div=document.createElement('div'); div.className='card';
-    div.innerHTML = `<h3>${q.postTitle||'Service'}</h3>
-      <p class="muted">From: ${q.requesterEmail||''} → Provider: ${q.providerEmail||''}</p>
-      <p>${q.details||''}</p>
-      <p class="muted">Status: ${q.status}</p>
-      <div class="actions">
-        <button class="btn act" data-a="in_progress">In progress</button>
-        <button class="btn act" data-a="closed">Closed</button>
-        <button class="btn act" data-a="rejected" style="background:#eee;border-color:#ddd">Reject</button>
-      </div>`;
-    div.querySelectorAll('.act').forEach(b=> b.onclick = async()=>{
-      const a=b.dataset.a; const rr=await API.post('/api/admin/quotes/update',{quoteId:q.id,action:a}); if(rr.error){alert(rr.error);return;} alert('Updated'); route();
-    });
-    wrap.appendChild(div);
-  });
-}
-async function viewAdminAppAds(){
-  renderBackBtn(true);
-  setHeroVisible(false);
-
-  const me=API._requireUser(); if(!me){ app.innerHTML='<p>Please log in.</p>'; return; }
-  if(!isMainAdmin(me)) { app.innerHTML='<p>Admins only.</p>'; return; }
-  app.innerHTML = `<section><h2>App Advertisements</h2>
-    <div class="card"><form id="adf">
-      <div class="row">
-        <div><label>Title <input name="title" required/></label></div>
-        <div><label>CTA Label <input name="cta_label" placeholder="Open"/></label></div>
-        <div><label>CTA URL <input name="cta_url" placeholder="https://…"/></label></div>
-      </div>
-      <label>Message<textarea name="message" required></textarea></label>
-      <div class="row">
-        <div><label>Audience
-          <select name="audience">
-            <option value="all">All users</option>
-            <option value="boosted">Boosted users</option>
-            <option value="trial">Users on trial</option>
-            <option value="cat:goods">Users who posted Goods</option>
-            <option value="cat:services">Users who posted Services</option>
-            <option value="cat:rentals">Users who posted Rentals</option>
-            <option value="selected">Selected emails</option>
-          </select>
-        </label></div>
-        <div><label>Target Emails (JSON array or comma list) <input name="target_emails" placeholder='["a@b.com","c@d.com"] or a@b.com,c@d.com'/></label></div>
-      </div>
-      <div class="actions"><button class="btn" type="submit">Send</button></div>
-    </form></div>
-  </section>`;
-  $('#adf').addEventListener('submit', async(e)=>{
-    e.preventDefault();
-    const fd=new FormData(e.target); const obj=Object.fromEntries(fd.entries());
-    const r=await API.post('/api/admin/broadcast/create', obj);
-    if (r.error){ alert(r.error); return; }
-    alert(`Sent to ${r.sent} user(s).`); location.hash='#/inbox';
-  });
-}
-
-/* ---------- UI helpers ---------- */
-const app = $('#app');
-const card = (t,d,b) => { const div=document.createElement('div'); div.className='card'; if(b){ const s=document.createElement('span'); s.className='badge'; s.textContent=b; div.appendChild(s); } div.innerHTML += `<h3>${t}</h3><p class="muted">${d||''}</p>`; return div; };
-
-function toggleAdminLink(){
-  const me = API._requireUser();
-  const adminLink  = $('#adminLink');
-  const quotesLink = $('#quotesLink');
-  const adCampLink = $('#adCampLink');
-  const adminAppAdsLink = $('#adminAppAdsLink');
-  if (adminLink)  adminLink.style.display  = isMainAdmin(me) ? '' : 'none';
-  if (quotesLink) quotesLink.style.display = isAdminOrLimited(me) ? '' : 'none';
-  if (adCampLink) adCampLink.style.display = (isAdminOrLimited(me) || isApprovedBlogger(me)) ? '' : 'none';
-  if (adminAppAdsLink) adminAppAdsLink.style.display = isMainAdmin(me) ? '' : 'none';
-}
-
-/* ---------- Router ---------- */
-window.addEventListener('hashchange', route);
-async function route(){
-  const hash = location.hash.slice(2);
-  const seg = hash.split('/').filter(Boolean);
-  toggleAdminLink();
-  sweepTrials();
-  playBoopOnNew();
-
-  const isHome = (!hash || seg[0]==='');  // Home = Goods feed only
-  setHeroVisible(isHome);
-
-  if (!hash || seg[0]==='') return viewHome();
-
-  renderBackBtn(true);
-
-  if (seg[0]==='goods')      return viewCategory('goods');
-  if (seg[0]==='services')   return viewCategory('services');
-  if (seg[0]==='rentals')    return viewCategory('rentals');
-  if (seg[0]==='jobs')       return viewCategory('jobs');
-  if (seg[0]==='ads' && !seg[1]) return viewCategory('ads');
-
-  if (seg[0]==='ads' && seg[1]==='become-blogger') return viewBecomeBlogger();
-  if (seg[0]==='ads' && seg[1]==='create-campaign') return viewCreateCampaign();
-  if (seg[0]==='ads' && seg[1]==='campaigns') return viewAdCampaigns();
-
-  if (seg[0]==='post' && seg[1]){
-    const allowBoost = ['goods','services','rentals','ads','jobs'].includes(seg[1]);
-    const boostMandatory = (seg[1] === 'ads');
-    app.innerHTML=''; app.appendChild(postForm({ category: seg[1], allowBoost, boostMandatory }));
-    return;
-  }
-
-  if (seg[0]==='item' && seg[1]) return viewItem(seg[1]);
-  if (seg[0]==='search')     return viewSearch();
-  if (seg[0]==='inbox')      return viewInbox();
-  if (seg[0]==='chat' && seg[1]) return viewChat(seg[1]);
-  if (seg[0]==='listings')   return viewListings();
-  if (seg[0]==='location')   return viewLocation();
-
-  if (seg[0]==='admin' && !seg[1]) return viewAdmin();
-  if (seg[0]==='admin' && seg[1]==='quotes') return viewAdminQuotes();
-  if (seg[0]==='admin' && seg[1]==='app-ads') return viewAdminAppAds();
-
-  return viewHome();
-}
